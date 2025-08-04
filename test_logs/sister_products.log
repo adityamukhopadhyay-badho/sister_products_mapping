@@ -1,0 +1,11 @@
+Use pytorch device_name: mps
+Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+Successfully loaded model: all-MiniLM-L6-v2
+Error processing row 1: 'float' object has no attribute 'strip'
+Error processing row 6: 'float' object has no attribute 'strip'
+Error processing row 8: 'float' object has no attribute 'strip'
+Error processing row 9: 'float' object has no attribute 'strip'
+Clustering results for Haldiram:
+  - Number of clusters: 4
+  - Number of noise points: 0
+  - Products clustered: 10
