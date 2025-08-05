@@ -34,6 +34,9 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import print as rprint
 
+# Import database manager
+from .database_manager import DatabaseManager
+
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
@@ -54,6 +57,7 @@ class SisterProductsMapper:
                  cluster_selection_epsilon: float = 0.0,
                  enable_phonetic: bool = False,
                  phonetic_algorithm: str = 'soundex',
+                 use_facets: bool = False,
                  output_dir: str = 'output',
                  logs_dir: str = 'logs'):
         """
@@ -69,6 +73,7 @@ class SisterProductsMapper:
             enable_phonetic: Enable phonetic similarity encoding for better clustering of
                            similar-sounding words (e.g., 'burfi', 'burfee', 'barfee')
             phonetic_algorithm: Phonetic algorithm to use ('soundex', 'metaphone', 'nysiis', 'match_rating_codex')
+            use_facets: Use facets_jsonb data directly for embeddings instead of normalized names
             output_dir: Directory for output files
             logs_dir: Directory for log files
         """
@@ -78,6 +83,7 @@ class SisterProductsMapper:
         self.cluster_selection_epsilon = cluster_selection_epsilon
         self.enable_phonetic = enable_phonetic
         self.phonetic_algorithm = phonetic_algorithm
+        self.use_facets = use_facets
         self.output_dir = Path(output_dir)
         self.logs_dir = Path(logs_dir)
         
@@ -92,6 +98,12 @@ class SisterProductsMapper:
         # Initialize components
         self.model = None
         self.clusterer = None
+        
+        # Initialize database manager for live data processing
+        self.db_manager = DatabaseManager()
+        
+        # Master results storage for all brands
+        self.master_results_df = pd.DataFrame()
         
         # Variant removal patterns - these will be removed from product names
         self.variant_patterns = {
@@ -247,9 +259,60 @@ class SisterProductsMapper:
         Returns:
             Normalized product name representing the core product
         """
-        normalized = label.lower().strip()
+        normalized = label.strip()  # Keep original case initially
         
-        # Extract variant values from facets and remove them from the label
+        # Step 1: Remove trailing weight/volume information by working backwards from the end
+        # Split into words and work backwards until we hit a number or reach a reasonable stopping point
+        words = normalized.split()
+        
+        # Find the last occurrence of a number in the string to identify where weight info starts
+        last_number_index = -1
+        for i in range(len(words) - 1, -1, -1):
+            word = words[i]
+            # Check if word contains a number
+            if re.search(r'\d', word):
+                last_number_index = i
+                break
+        
+        # If we found a number, check if what follows looks like weight/volume info
+        if last_number_index > 0:  # Don't remove if number is at the beginning
+            # Look at words after the last number
+            remaining_words = words[last_number_index + 1:]
+            
+            # Check if remaining words are weight/volume related
+            weight_volume_keywords = [
+                'grams?', 'gms?', 'g', 'kg', 'kilograms?', 'kilo',
+                'ml', 'milliliters?', 'liters?', 'l', 'ltrs?',
+                'oz', 'ounces?', 'lbs?', 'pounds?', 'gram', 'gm'
+            ]
+            
+            # If any remaining word matches weight/volume pattern, remove from that number onwards
+            should_truncate = False
+            for word in remaining_words:
+                word_clean = re.sub(r'[^\w]', '', word.lower())
+                for keyword in weight_volume_keywords:
+                    if re.match(rf'^{keyword}$', word_clean):
+                        should_truncate = True
+                        break
+                if should_truncate:
+                    break
+            
+            if should_truncate:
+                # Keep everything up to (but not including) the last number
+                normalized = ' '.join(words[:last_number_index])
+        
+        # Step 2: Handle the case where weight info appears as "100g" or "200grams" (number+unit together)
+        # Remove patterns like "100g", "250ml", "2kg" from the end
+        normalized = re.sub(r'\s+\d+\s*(g|gm|gms|gram|grams|kg|ml|l|ltr|ltrs|liter|liters|oz|lb|lbs|pound|pounds)\s*$', '', normalized, flags=re.IGNORECASE)
+        
+        # Step 3: Remove common packaging terms from the end
+        normalized = re.sub(r'\s+\((box|pack|packet|pouch|bag|tin|can|jar|bottle)\)\s*$', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'\s+(box|pack|packet|pouch|bag|tin|can|jar|bottle)\s*$', '', normalized, flags=re.IGNORECASE)
+        
+        # Step 4: Now convert to lowercase for remaining processing
+        normalized = normalized.lower().strip()
+        
+        # Step 5: Extract variant values from facets and remove them from the label
         # But be selective - only remove weight/volume/size info, not flavor/product identifiers
         variant_values_to_remove = set()
         
@@ -279,63 +342,52 @@ class SisterProductsMapper:
                     if len(word) > 3:  # Only remove meaningful words
                         normalized = re.sub(rf'\b{re.escape(word)}\b', ' ', normalized)
         
-        # Remove brand name FIRST (before other processing affects it)
+        # Step 6: Remove brand name (but more conservatively - only if it's clearly the brand name)
         if brand_name and brand_name.strip():
             brand_clean = brand_name.lower().strip()
-            # Remove exact brand name matches (case-insensitive)
-            normalized = re.sub(rf'\b{re.escape(brand_clean)}\b', ' ', normalized, flags=re.IGNORECASE)
             
-            # Also try removing brand name without special characters
-            brand_alphanumeric = re.sub(r'[^\w\s]', '', brand_clean)
-            if brand_alphanumeric and brand_alphanumeric != brand_clean:
-                normalized = re.sub(rf'\b{re.escape(brand_alphanumeric)}\b', ' ', normalized, flags=re.IGNORECASE)
-            
-            # Handle partial brand names that might remain (like "ram" from "Haldiram")
-            # Also check for substrings of the brand name that might remain
-            if len(brand_clean) > 3:
-                # Remove substrings of 3+ characters from the brand name
-                for i in range(len(brand_clean) - 2):
-                    for j in range(i + 3, len(brand_clean) + 1):
-                        substring = brand_clean[i:j]
-                        if len(substring) >= 3:
-                            normalized = re.sub(rf'\b{re.escape(substring)}\b', ' ', normalized, flags=re.IGNORECASE)
+            # Only remove brand name if it appears at the beginning of the string
+            if normalized.startswith(brand_clean + ' '):
+                normalized = normalized[len(brand_clean):].strip()
+            elif normalized.startswith(brand_clean):
+                normalized = normalized[len(brand_clean):].strip()
         
-        # Remove dashes and special characters early
+        # Step 7: Remove dashes and clean up special characters
         normalized = re.sub(r'\s*[-–—]\s*', ' ', normalized)  # Dashes with optional spaces
         normalized = re.sub(r'[^\w\s]', ' ', normalized)  # Other special characters
         
-        # Apply pattern-based removal for weights, volumes, etc.
+        # Step 8: Apply pattern-based removal for any remaining weights, volumes, etc.
         for category, patterns in self.variant_patterns.items():
             for pattern in patterns:
                 normalized = re.sub(pattern, ' ', normalized, flags=re.IGNORECASE)
         
-        # Remove numbers along with the word that follows them (but be more specific)
-        # This targets patterns like "250 grams", "13 gram", "180g", etc.
-        normalized = re.sub(r'\b\d+\s*(g|gm|gram|grams|kg|ml|liter|liters|oz|pounds?|lbs?)\b', ' ', normalized, flags=re.IGNORECASE)
-        
-        # Remove standalone numbers that might be left
+        # Step 9: Remove any remaining standalone numbers
         normalized = re.sub(r'\b\d+\b', ' ', normalized)
         
-        # Remove other noise patterns
+        # Step 10: Remove other noise patterns
         noise_patterns = [
             r'\b(rs\.?|₹)\s*\d+\b',  # Price mentions
             r'\b\d+%\s*(extra|off|free)\b',  # Promotional text
-            r'\b(pack|packet|pouch|bag|tin|can|jar|bottle)\b',  # Packaging
-            r'\b(new|improved|special|premium|original)\b',  # Marketing terms (excluding "classic" as it can be product identity)
+            r'\b(new|improved|special|premium|original)\b',  # Marketing terms (excluding "classic")
             r'\b(available|now|today|limited|offer)\b',  # Availability terms
         ]
         
         for pattern in noise_patterns:
             normalized = re.sub(pattern, ' ', normalized, flags=re.IGNORECASE)
         
-        # Final cleanup
+        # Step 11: Final cleanup
         normalized = re.sub(r'\s+', ' ', normalized)  # Multiple spaces to single
         normalized = normalized.strip()
         
-        # If normalization resulted in too short a string, fall back to original
-        if len(normalized) < 5:
+        # Step 12: If normalization resulted in too short a string, fall back to a cleaned version of original
+        if len(normalized) < 3:
             normalized = re.sub(r'[^\w\s]', ' ', label.lower())
             normalized = re.sub(r'\s+', ' ', normalized).strip()
+            # Remove brand name from fallback too
+            if brand_name and brand_name.strip():
+                brand_clean = brand_name.lower().strip()
+                if normalized.startswith(brand_clean + ' '):
+                    normalized = normalized[len(brand_clean):].strip()
         
         return normalized
     
@@ -369,6 +421,72 @@ class SisterProductsMapper:
                 cleaned_categories.append(cat_clean)
         
         return cleaned_categories if cleaned_categories else ["general"]
+
+    def create_facets_identity(self, facets_dict: Dict[str, Any], category: str = "") -> str:
+        """
+        Create identity string directly from facets_jsonb data for richer semantic embeddings.
+        
+        Args:
+            facets_dict: Dictionary of product facets
+            category: Product category
+            
+        Returns:
+            Facets-based identity string for embedding
+        """
+        identity_parts = []
+        
+        # Add category first
+        if category:
+            categories = self.parse_categories(category)
+            category_context = " ".join(categories)
+            identity_parts.append(f"category:{category_context}")
+        
+        # Process ALL facets dynamically - no hardcoded exclusions
+        for key, value in facets_dict.items():
+            if value is None:
+                continue
+            
+            # Process different value types
+            if isinstance(value, list):
+                # Join list values, filtering out empty/null items
+                clean_values = []
+                for v in value:
+                    if v and str(v).strip():
+                        clean_val = str(v).strip()
+                        # Clean up property-style values (❌/✅ prefixes)
+                        clean_val = re.sub(r'^[❌✅]\s*', '', clean_val)
+                        if clean_val and clean_val.lower() not in ['n/a', 'null', 'none', '']:
+                            clean_values.append(clean_val)
+                
+                if clean_values:
+                    identity_parts.append(f"{key}:{' '.join(clean_values)}")
+                    
+            elif isinstance(value, str):
+                clean_value = value.strip()
+                # Filter out common null/empty values
+                if (clean_value and 
+                    clean_value.lower() not in ['n/a', 'null', 'none', '', '❌ ', '✅ ']):
+                    # Clean up property-style values (❌/✅ prefixes)
+                    clean_value = re.sub(r'^[❌✅]\s*', '', clean_value)
+                    if clean_value:
+                        identity_parts.append(f"{key}:{clean_value}")
+                        
+            elif isinstance(value, (int, float)):
+                identity_parts.append(f"{key}:{str(value)}")
+        
+        # Join all parts
+        facets_identity = " | ".join(identity_parts)
+        
+        # Add phonetic encoding if enabled and we have meaningful content
+        if self.enable_phonetic and facets_identity:
+            # Extract text content for phonetic encoding
+            text_content = re.sub(r'\w+:', '', facets_identity)  # Remove facet keys
+            text_content = re.sub(r'[|]', ' ', text_content)     # Remove separators
+            phonetic_text = self._get_phonetic_encoding(text_content)
+            if phonetic_text:
+                facets_identity += f" | PHONETIC:{phonetic_text}"
+        
+        return facets_identity.lower().strip()
 
     def create_core_identity(self, normalized_name: str, category: str, brand: str = "") -> str:
         """
@@ -439,12 +557,15 @@ class SisterProductsMapper:
                     # Parse categories for additional context
                     categories_list = self.parse_categories(row['categoryLabel'])
                     
-                    # Create core identity string
-                    core_identity = self.create_core_identity(
-                        normalized_name, 
-                        row['categoryLabel'], 
-                        brand_from_facets
-                    )
+                    # Create core identity string - use facets if flag is enabled
+                    if self.use_facets:
+                        core_identity = self.create_facets_identity(facets, row['categoryLabel'])
+                    else:
+                        core_identity = self.create_core_identity(
+                            normalized_name, 
+                            row['categoryLabel'], 
+                            brand_from_facets
+                        )
                     
                     core_identities.append(core_identity)
                     
@@ -466,7 +587,11 @@ class SisterProductsMapper:
                     # Parse categories even in fallback
                     fallback_categories = self.parse_categories(row['categoryLabel'])
                     
-                    fallback_core = f"{fallback_normalized} | {row['categoryLabel']}"
+                    if self.use_facets:
+                        # In facets mode, try basic facets fallback or use normalized name
+                        fallback_core = f"product:{fallback_normalized} | category:{row['categoryLabel']}"
+                    else:
+                        fallback_core = f"{fallback_normalized} | {row['categoryLabel']}"
                     core_identities.append(fallback_core)
                     processed_df.at[idx, 'normalized_name'] = fallback_normalized
                     processed_df.at[idx, 'core_identity'] = fallback_core
@@ -520,6 +645,65 @@ class SisterProductsMapper:
         
         return cluster_labels
     
+    def classify_cluster_variant_type(self, cluster_products: pd.DataFrame) -> str:
+        """
+        Classify a cluster as either 'type_variant' or 'size_variant' based on numbers in labels.
+        
+        Logic:
+        - If numbers in labels overlap (same numbers present), it's a TYPE VARIANT
+        - If numbers in labels differ completely, it's a SIZE VARIANT
+        
+        Args:
+            cluster_products: DataFrame containing products in the cluster
+            
+        Returns:
+            'type_variant', 'size_variant', or 'mixed' if unclear
+        """
+        if len(cluster_products) < 2:
+            return 'single_product'
+        
+        labels = cluster_products['label'].tolist()
+        
+        # Extract all numbers from each label
+        label_numbers = []
+        for label in labels:
+            # Find all numbers in the label (including decimals)
+            numbers = re.findall(r'\d+(?:\.\d+)?', label)
+            # Convert to set of numbers for comparison
+            number_set = set(numbers)
+            label_numbers.append(number_set)
+        
+        # Check if any numbers are shared between different labels
+        has_common_numbers = False
+        has_different_numbers = False
+        
+        for i in range(len(label_numbers)):
+            for j in range(i + 1, len(label_numbers)):
+                set_i = label_numbers[i]
+                set_j = label_numbers[j]
+                
+                # Check for intersection (common numbers)
+                if set_i.intersection(set_j):
+                    has_common_numbers = True
+                
+                # Check for differences
+                if set_i != set_j:
+                    has_different_numbers = True
+        
+        # Classification logic
+        if has_common_numbers and has_different_numbers:
+            # Mixed case - some numbers same, some different
+            return 'mixed'
+        elif has_common_numbers:
+            # Same numbers across labels = TYPE VARIANT
+            return 'type_variant'
+        elif has_different_numbers:
+            # Different numbers across labels = SIZE VARIANT  
+            return 'size_variant'
+        else:
+            # No numbers or all identical = TYPE VARIANT
+            return 'type_variant'
+    
     def generate_output(self, processed_df: pd.DataFrame, cluster_labels: np.ndarray, 
                        brand_name: str) -> Dict[str, Any]:
         """
@@ -538,14 +722,19 @@ class SisterProductsMapper:
         # Add cluster labels to DataFrame
         processed_df['cluster_id'] = cluster_labels
         
-        # Create sister product clusters mapping
+        # Create sister product clusters mapping with variant type classification
         sister_clusters = {}
+        cluster_variant_types = {}  # Store variant types for each cluster
         
         for cluster_id in set(cluster_labels):
             if cluster_id == -1:  # Skip noise points
                 continue
                 
             cluster_products = processed_df[processed_df['cluster_id'] == cluster_id]
+            
+            # Classify the variant type for this cluster
+            variant_type = self.classify_cluster_variant_type(cluster_products)
+            cluster_variant_types[f"cluster_{cluster_id}"] = variant_type
             
             cluster_data = []
             for _, product in cluster_products.iterrows():
@@ -559,7 +748,10 @@ class SisterProductsMapper:
                     'primary_category': product.get('primary_category', 'general')
                 })
             
-            sister_clusters[f"cluster_{cluster_id}"] = cluster_data
+            sister_clusters[f"cluster_{cluster_id}"] = {
+                'variant_type': variant_type,
+                'products': cluster_data
+            }
         
         # Handle noise points (products with no sisters)
         noise_products = processed_df[processed_df['cluster_id'] == -1]
@@ -575,7 +767,24 @@ class SisterProductsMapper:
                     'categories_parsed': product.get('categories_parsed', ''),
                     'primary_category': product.get('primary_category', 'general')
                 })
-            sister_clusters['no_sisters'] = noise_data
+            sister_clusters['no_sisters'] = {
+                'variant_type': 'no_sisters',
+                'products': noise_data
+            }
+        
+        # Create variant type summary
+        variant_type_summary = {
+            'type_variant': 0,
+            'size_variant': 0,
+            'mixed': 0,
+            'single_product': 0
+        }
+        
+        for cluster_name, cluster_info in sister_clusters.items():
+            if cluster_name != 'no_sisters':
+                variant_type = cluster_info['variant_type']
+                if variant_type in variant_type_summary:
+                    variant_type_summary[variant_type] += 1
         
         # Create final output structure
         output = {
@@ -584,6 +793,7 @@ class SisterProductsMapper:
             'total_clusters': len([k for k in sister_clusters.keys() if k != 'no_sisters']),
             'products_with_sisters': len(processed_df[processed_df['cluster_id'] != -1]),
             'products_without_sisters': len(noise_products),
+            'variant_type_summary': variant_type_summary,
             'sisterProductClusters': sister_clusters,
             'processing_metadata': {
                 'model_used': self.model_name,
@@ -616,12 +826,22 @@ class SisterProductsMapper:
         csv_file = self.output_dir / f"{brand_clean}_detailed_results.csv"
         processed_df.to_csv(csv_file, index=False, encoding='utf-8')
         
-        # Save cluster summary CSV
+        # Save cluster summary CSV with variant types
         summary_data = []
-        for cluster_name, products in results['sisterProductClusters'].items():
-            for product in products:
+        for cluster_name, cluster_info in results['sisterProductClusters'].items():
+            variant_type = cluster_info.get('variant_type', 'unknown')
+            products = cluster_info.get('products', cluster_info)  # Handle old format if needed
+            
+            # Handle case where products might be directly under cluster_info (old format)
+            if isinstance(products, list):
+                product_list = products
+            else:
+                product_list = [products]  # Single product case
+                
+            for product in product_list:
                 summary_data.append({
                     'cluster_id': cluster_name,
+                    'variant_type': variant_type,
                     'brandSKUId': product['brandSKUId'],
                     'label': product['label'],
                     'normalized_name': product['normalized_name'],
@@ -652,19 +872,48 @@ class SisterProductsMapper:
         table.add_row("Products without Sisters", str(results['products_without_sisters']))
         table.add_row("Model Used", results['processing_metadata']['model_used'])
         
+        # Add variant type summary if available
+        if 'variant_type_summary' in results:
+            variant_summary = results['variant_type_summary']
+            table.add_row("", "")  # Empty row for separation
+            table.add_row("Type Variants", str(variant_summary.get('type_variant', 0)))
+            table.add_row("Size Variants", str(variant_summary.get('size_variant', 0)))
+            table.add_row("Mixed Variants", str(variant_summary.get('mixed', 0)))
+            table.add_row("Single Product Clusters", str(variant_summary.get('single_product', 0)))
+        
         self.console.print(table)
         
         # Show top clusters
         clusters = results['sisterProductClusters']
         if clusters:
             self.console.print("\n[bold]Top Sister Product Clusters:[/bold]")
-            cluster_sizes = [(name, len(products)) for name, products in clusters.items() 
-                           if name != 'no_sisters']
+            cluster_sizes = []
+            for name, cluster_info in clusters.items():
+                if name != 'no_sisters':
+                    products = cluster_info.get('products', cluster_info)
+                    if isinstance(products, list):
+                        size = len(products)
+                    else:
+                        size = 1
+                    variant_type = cluster_info.get('variant_type', 'unknown')
+                    cluster_sizes.append((name, size, variant_type))
+            
             cluster_sizes.sort(key=lambda x: x[1], reverse=True)
             
-            for cluster_name, size in cluster_sizes[:5]:  # Show top 5 clusters
-                products = clusters[cluster_name]
-                self.console.print(f"\n[green]{cluster_name}[/green] ({size} products):")
+            for cluster_name, size, variant_type in cluster_sizes[:5]:  # Show top 5 clusters
+                cluster_info = clusters[cluster_name]
+                products = cluster_info.get('products', cluster_info)
+                if not isinstance(products, list):
+                    products = [products]
+                
+                variant_color = {
+                    'type_variant': 'blue',
+                    'size_variant': 'yellow', 
+                    'mixed': 'magenta',
+                    'single_product': 'cyan'
+                }.get(variant_type, 'white')
+                
+                self.console.print(f"\n[green]{cluster_name}[/green] ({size} products) - [{variant_color}]{variant_type.upper()}[/{variant_color}]:")
                 for i, product in enumerate(products[:3]):  # Show first 3 products
                     self.console.print(f"  {i+1}. {product['label']}")
                 if len(products) > 3:
@@ -739,4 +988,202 @@ class SisterProductsMapper:
         
         self.console.print(f"[green]Combined results saved to: {combined_file}[/green]")
         
-        return all_results 
+        return all_results
+    
+    def process_from_database(self, brand_id: Optional[str] = None, batch_size: int = 1000) -> Dict[str, Any]:
+        """
+        Process sister products mapping using live data from PostgreSQL database.
+        
+        Args:
+            brand_id: Optional specific brand ID to process. If None, processes all brands.
+            batch_size: Number of products to process per brand batch
+            
+        Returns:
+            Dictionary containing all brand results
+        """
+        self.console.print("[bold blue]🚀 Starting Database-Driven Sister Products Mapping[/bold blue]")
+        
+        try:
+            # Load model if not already loaded
+            self.load_model()
+            
+            if brand_id:
+                # Process specific brand
+                return self._process_single_brand_from_db(brand_id)
+            else:
+                # Process all brands
+                return self._process_all_brands_from_db(batch_size)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to process from database: {e}")
+            self.console.print(f"[red]✗ Processing failed: {e}[/red]")
+            raise
+    
+    def _process_single_brand_from_db(self, brand_id: str) -> Dict[str, Any]:
+        """Process a single brand from the database."""
+        try:
+            # Fetch brand data
+            df = self.db_manager.fetch_brand_products(brand_id)
+            
+            if df.empty:
+                self.console.print(f"[yellow]⚠️ No products found for brand {brand_id}[/yellow]")
+                return {}
+            
+            # Get brand name from first row
+            brand_name = df['brandName'].iloc[0] if 'brandName' in df.columns else df['brandId'].iloc[0]
+            
+            self.console.print(Panel(
+                f"[bold green]Processing Brand from Database[/bold green]\n"
+                f"Brand ID: {brand_id}\nProducts: {len(df)}",
+                style="green"
+            ))
+            
+            # Process through the pipeline
+            processed_df, embeddings, core_identities = self.process_brand_data(df, brand_name)
+            cluster_labels = self.perform_clustering(embeddings, brand_name)
+            results = self.generate_output(processed_df, cluster_labels, brand_name)
+            
+            # Save results to CSV and append to master
+            self._save_and_append_results(results, brand_name, processed_df)
+            
+            # Display results
+            self.display_results_summary(results)
+            
+            return {brand_name: results}
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process brand {brand_id}: {e}")
+            raise
+    
+    def _process_all_brands_from_db(self, batch_size: int = 1000) -> Dict[str, Any]:
+        """Process all brands from the database."""
+        try:
+            # Get all brands
+            brands_df = self.db_manager.get_all_brands()
+            
+            if brands_df.empty:
+                self.console.print("[yellow]⚠️ No verified brands found[/yellow]")
+                return {}
+            
+            all_results = {}
+            total_brands = len(brands_df)
+            
+            self.console.print(f"[blue]📊 Processing {total_brands} brands from database[/blue]")
+            
+            for idx, brand_row in brands_df.iterrows():
+                brand_id = brand_row['brandId']
+                brand_name = brand_row['brandName']
+                
+                self.console.print(f"\n[cyan]═══ Brand {idx+1}/{total_brands}: {brand_name} ═══[/cyan]")
+                
+                try:
+                    # Fetch and process brand data
+                    df = self.db_manager.fetch_brand_products(brand_id)
+                    
+                    if df.empty:
+                        self.console.print(f"[yellow]⚠️ No products found for {brand_name}[/yellow]")
+                        continue
+                    
+                    # Use brand name from fetched data for consistent file naming
+                    actual_brand_name = df['brandName'].iloc[0] if 'brandName' in df.columns else brand_name
+                    
+                    # Process through the pipeline
+                    processed_df, embeddings, core_identities = self.process_brand_data(df, actual_brand_name)
+                    cluster_labels = self.perform_clustering(embeddings, actual_brand_name)
+                    results = self.generate_output(processed_df, cluster_labels, actual_brand_name)
+                    
+                    # Save and append results
+                    self._save_and_append_results(results, actual_brand_name, processed_df)
+                    
+                    # Display results
+                    self.display_results_summary(results)
+                    
+                    all_results[actual_brand_name] = results
+                    
+                    self.console.print(f"[green]✅ {actual_brand_name} processing complete[/green]")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to process brand {brand_name}: {e}")
+                    self.console.print(f"[red]✗ Error processing {brand_name}: {e}[/red]")
+                    continue
+            
+            # Save final master CSV
+            self._save_master_results()
+            
+            # Save combined JSON results
+            combined_file = self.output_dir / "all_brands_database_results.json"
+            with open(combined_file, 'w', encoding='utf-8') as f:
+                json.dump(all_results, f, indent=2, ensure_ascii=False)
+            
+            self.console.print(f"[green]📁 Combined results saved to: {combined_file}[/green]")
+            
+            return all_results
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process all brands: {e}")
+            raise
+    
+    def _save_and_append_results(self, results: Dict[str, Any], brand_name: str, processed_df: pd.DataFrame):
+        """Save brand results and append to master CSV with conflict resolution."""
+        try:
+            # Save individual brand results (existing logic)
+            self.save_results(results, brand_name, processed_df)
+            
+            # Prepare data for master CSV with conflict resolution
+            brand_results_df = processed_df.copy()
+            brand_results_df['brand_name'] = brand_name
+            brand_results_df['processing_timestamp'] = pd.Timestamp.now()
+            
+            # Append to master results with conflict resolution on brandSKUId
+            if self.master_results_df.empty:
+                self.master_results_df = brand_results_df.copy()
+            else:
+                # Remove existing entries for this brand to avoid duplicates
+                self.master_results_df = self.master_results_df[
+                    self.master_results_df['brandId'] != brand_results_df['brandId'].iloc[0]
+                ]
+                # Append new results
+                self.master_results_df = pd.concat([self.master_results_df, brand_results_df], 
+                                                 ignore_index=True)
+            
+            # Live save to master CSV
+            master_csv_path = self.output_dir / "master_sister_products_results.csv"
+            self.master_results_df.to_csv(master_csv_path, index=False)
+            
+            self.console.print(f"[green]💾 Live saved to master CSV ({len(self.master_results_df)} total products)[/green]")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving and appending results for {brand_name}: {e}")
+            self.console.print(f"[red]✗ Error saving results for {brand_name}: {e}[/red]")
+    
+    def _save_master_results(self):
+        """Save final master results to multiple formats."""
+        try:
+            if self.master_results_df.empty:
+                self.console.print("[yellow]⚠️ No master results to save[/yellow]")
+                return
+            
+            # Save master CSV
+            master_csv_path = self.output_dir / "master_sister_products_results.csv"
+            self.master_results_df.to_csv(master_csv_path, index=False)
+            
+            # Save summary statistics
+            summary_stats = {
+                'total_products': len(self.master_results_df),
+                'total_brands': self.master_results_df['brandId'].nunique(),
+                'total_clusters': self.master_results_df['cluster_id'].nunique() - (1 if -1 in self.master_results_df['cluster_id'].values else 0),
+                'products_with_sisters': len(self.master_results_df[self.master_results_df['cluster_id'] != -1]),
+                'clustering_rate': len(self.master_results_df[self.master_results_df['cluster_id'] != -1]) / len(self.master_results_df) * 100,
+                'processing_timestamp': pd.Timestamp.now().isoformat()
+            }
+            
+            summary_file = self.output_dir / "master_processing_summary.json"
+            with open(summary_file, 'w', encoding='utf-8') as f:
+                json.dump(summary_stats, f, indent=2, ensure_ascii=False)
+            
+            self.console.print(f"[green]📊 Master results saved: {len(self.master_results_df)} products across {summary_stats['total_brands']} brands[/green]")
+            self.console.print(f"[blue]📈 Overall clustering rate: {summary_stats['clustering_rate']:.1f}%[/blue]")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving master results: {e}")
+            self.console.print(f"[red]✗ Error saving master results: {e}[/red]") 

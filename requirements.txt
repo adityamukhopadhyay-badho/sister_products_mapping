@@ -7,9 +7,8 @@ plotly==5.15.0
 matplotlib==3.7.2
 seaborn==0.12.2
 rich==13.5.2
-tqdm==4.65.0
 umap-learn==0.5.3
 networkx==3.1
-python-dateutil==2.8.2
-pytz==2023.3
-jellyfish==1.2.0 
+jellyfish==1.2.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9 

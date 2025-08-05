@@ -94,6 +94,7 @@ sister_products_mapping/
 
 ## 📊 Input Data Format
 
+### CSV File Format
 Your CSV files should contain the following columns:
 
 | Column | Description | Example |
@@ -107,6 +108,37 @@ Your CSV files should contain the following columns:
 ```csv
 brandSKUId,label,facets_jsonb,categoryLabel
 abc123,"Lays Cream & Onion Chips 52g","{""flavour"": ""Cream & Onion"", ""netWeight"": ""52g"", ""texture"": ""Crispy""}","Snacks & Packaged Foods"
+```
+
+### 🗄️ Database Integration
+
+**NEW**: Direct PostgreSQL database integration for live data processing.
+
+#### Database Configuration
+```bash
+# Environment variables (optional - defaults provided)
+export DB_USER="postgres"
+export DB_PASSWORD="your_password" 
+export DB_HOST="db.badho.in"
+export DB_PORT="5432"
+export DB_NAME="badho-app"
+```
+
+#### Features
+- ✅ **Live Data Processing**: Process products directly from PostgreSQL database
+- ✅ **Brand-wise Processing**: Process all brands or specific brand by ID
+- ✅ **Master CSV Output**: Consolidated results across all brands with conflict resolution
+- ✅ **Live Saves**: Progressive saving after each brand completion
+- ✅ **Automatic Brand Detection**: Fetches all verified brands automatically
+
+#### Database Schema Requirements
+The system expects the following PostgreSQL schema structure:
+```sql
+brands."brandSKU"        -- Product table
+brands.brand             -- Brand table  
+categories.category      -- Category table
+brands."brandSKU_category" -- Product-category mapping
+users.seller_brand       -- Brand-seller mapping
 ```
 
 ## 🎮 Usage
@@ -147,6 +179,106 @@ python3 main.py --no-visualizations data/*.csv
 python3 main.py --output-dir results --visualizations-dir charts data/*.csv
 ```
 
+### Database Processing
+```bash
+# Process all brands from database
+python3 main.py --from-database --cluster-epsilon 0.1 --no-visualizations
+
+# Process specific brand from database
+python3 main.py --from-database --brand-id "a8e1f9cb-38b3-4104-aaf8-e27e4573cc73" --cluster-epsilon 0.1
+
+# Use facets-based embeddings from database
+python3 main.py --from-database --use-facets --cluster-epsilon 0.1 --no-visualizations
+
+# Database processing with phonetic similarity
+python3 main.py --from-database --enable-phonetic --phonetic-algorithm metaphone --cluster-epsilon 0.1
+```
+
+## 📋 Complete Command-Line Reference
+
+### Positional Arguments
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `files` | CSV files containing product data (optional when using --from-database) | `data/brand1.csv data/brand2.csv` |
+
+### Data Source Options
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--from-database` | flag | `False` | Process products from PostgreSQL database instead of CSV files |
+| `--brand-id` | string | `None` | Specific brand ID to process when using --from-database |
+| `--batch-size` | integer | `1000` | Batch size for database processing |
+
+### Model & Algorithm Options
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--model` | string | `all-MiniLM-L6-v2` | Sentence transformer model to use for embeddings |
+| `--use-facets` | flag | `False` | Use facets_jsonb data directly for embeddings instead of normalized names |
+
+### Clustering Parameters
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--min-cluster-size` | integer | `2` | Minimum cluster size for HDBSCAN |
+| `--min-samples` | integer | `1` | Minimum samples for HDBSCAN |
+| `--cluster-epsilon` | float | `0.0` | Distance threshold for cluster merging. Higher values (0.1-0.3) create larger, more inclusive clusters |
+
+### Phonetic Similarity Options
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--enable-phonetic` | flag | `False` | Enable phonetic similarity encoding for better clustering of similar-sounding words |
+| `--phonetic-algorithm` | choice | `metaphone` | Phonetic algorithm: `soundex`, `metaphone`, `nysiis`, `match_rating_codex` |
+
+### Output & Visualization Options
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--output-dir` | string | `output` | Output directory for results (JSON, CSV files) |
+| `--visualizations-dir` | string | `visualizations` | Directory for visualization files (HTML, PNG) |
+| `--logs-dir` | string | `logs` | Directory for log files |
+| `--no-visualizations` | flag | `False` | Skip generating visualizations for faster processing |
+
+### Common Usage Patterns
+
+#### CSV File Processing
+```bash
+# Basic processing
+python3 main.py data/brand1.csv data/brand2.csv
+
+# High-accuracy clustering
+python3 main.py --cluster-epsilon 0.1 --enable-phonetic data/*.csv
+
+# Fast processing without visualizations
+python3 main.py --no-visualizations --min-cluster-size 2 data/*.csv
+
+# Using advanced embedding model
+python3 main.py --model all-mpnet-base-v2 --cluster-epsilon 0.15 data/*.csv
+```
+
+#### Database Processing
+```bash
+# Process all brands from database
+python3 main.py --from-database --cluster-epsilon 0.1
+
+# Process specific brand with variant classification
+python3 main.py --from-database --brand-id "brand-uuid-here" --cluster-epsilon 0.1 --no-visualizations
+
+# Facets-based processing with phonetic similarity
+python3 main.py --from-database --use-facets --enable-phonetic --phonetic-algorithm nysiis --cluster-epsilon 0.1
+
+# High-performance batch processing
+python3 main.py --from-database --batch-size 2000 --no-visualizations --cluster-epsilon 0.1
+```
+
+#### Advanced Configurations
+```bash
+# Maximum clustering accuracy
+python3 main.py --model all-mpnet-base-v2 --enable-phonetic --phonetic-algorithm nysiis --cluster-epsilon 0.15 --min-cluster-size 2 data/*.csv
+
+# Fast processing for large datasets
+python3 main.py --no-visualizations --min-cluster-size 3 --cluster-epsilon 0.05 --batch-size 2000 data/*.csv
+
+# Custom output organization
+python3 main.py --output-dir /path/to/results --visualizations-dir /path/to/charts --logs-dir /path/to/logs data/*.csv
+```
+
 ### 🔊 Phonetic Similarity Feature
 
 The phonetic similarity feature helps cluster products with similar-sounding names but different spellings - especially useful for Indian food products with multiple transliterations.
@@ -177,22 +309,30 @@ python3 main.py --enable-phonetic --phonetic-algorithm soundex data/*.csv
 python3 main.py --enable-phonetic --phonetic-algorithm nysiis data/*.csv
 ```
 
-### Command Line Options
-```
-Options:
-  --model MODEL               Sentence transformer model (default: all-MiniLM-L6-v2)
-  --min-cluster-size SIZE     Minimum cluster size for HDBSCAN (default: 2)
-  --min-samples SAMPLES       Minimum samples for HDBSCAN (default: 1)
-  --cluster-epsilon EPSILON   Distance threshold for cluster merging. Higher values
-                              (0.1-0.3) create larger, more inclusive clusters (default: 0.0)
-  --enable-phonetic           Enable phonetic similarity encoding for similar-sounding words
-  --phonetic-algorithm ALGO   Phonetic algorithm: soundex, metaphone, nysiis, match_rating_codex
-                              (default: metaphone)
-  --output-dir DIR           Output directory (default: output)
-  --visualizations-dir DIR   Visualizations directory (default: visualizations)
-  --logs-dir DIR             Logs directory (default: logs)
-  --no-visualizations        Skip generating visualizations
-  -h, --help                 Show help message
+### 🏷️ Variant Classification Feature
+
+**NEW**: The system now automatically classifies each cluster by analyzing the numbers in product labels to determine the type of variance:
+
+#### Variant Types
+- **🔵 TYPE_VARIANT**: Products with same numbers (size/weight) but different flavors/types
+  - Example: "Pizza Spice Mix 38g" + "Pasta Spice Mix 38g" 
+- **🟡 SIZE_VARIANT**: Products with different numbers (size/weight) but same type
+  - Example: "Garam Masala 50g" + "Garam Masala 100g" + "Garam Masala 200g"
+- **🟣 MIXED**: Clusters containing both size and type variations
+  - Example: "Turmeric 100g" + "Turmeric 100g (box)" + "Turmeric 200g"
+- **🔷 SINGLE_PRODUCT**: Clusters with only one product
+
+#### Output Enhancement
+- ✅ **Enhanced JSON**: Includes `variant_type_summary` and per-cluster `variant_type`
+- ✅ **Enhanced CSV**: Adds `variant_type` column to cluster summary
+- ✅ **Visual Display**: Color-coded variant types in terminal output
+
+```bash
+# Example output showing variant types
+cluster_12 (12 products) - SIZE_VARIANT:
+  1. EVEREST CORIANDER POWDER 200g. 200 Grams  
+  2. EVEREST Coriander Powder 500g
+  3. EVEREST Coriander Powder-100g
 ```
 
 ## 📈 Output Files
@@ -200,20 +340,31 @@ Options:
 ### 1. Main Results (JSON)
 ```json
 {
-  "brand": "Cornitos",
-  "total_products": 236,
-  "total_clusters": 45,
-  "products_with_sisters": 180,
-  "products_without_sisters": 56,
+  "brand": "EVEREST",
+  "total_products": 251,
+  "total_clusters": 59,
+  "products_with_sisters": 235,
+  "products_without_sisters": 16,
+  "variant_type_summary": {
+    "type_variant": 2,
+    "size_variant": 33,
+    "mixed": 24,
+    "single_product": 0
+  },
   "sisterProductClusters": {
-    "cluster_0": [
-      {
-        "brandSKUId": "abc123",
-        "label": "Cornitos Nacho Chips Sweet Chili 22g",
-        "normalized_name": "cornitos nacho chips",
-        "categoryLabel": "Food"
-      }
-    ]
+    "cluster_0": {
+      "variant_type": "size_variant",
+      "products": [
+        {
+          "brandSKUId": "abc123",
+          "label": "EVEREST GARAM MASALA 50g. 50 Grams",
+          "normalized_name": "garam masala",
+          "categoryLabel": "Spices",
+          "categories_parsed": "Spices",
+          "primary_category": "Spices"
+        }
+      ]
+    }
   }
 }
 ```
@@ -221,10 +372,56 @@ Options:
 ### 2. Detailed CSV Results
 Contains all products with cluster assignments, normalized names, and core identities.
 
-### 3. Cluster Summary CSV
-Simplified view focusing on cluster assignments and key product information.
+| Column | Description |
+|--------|-------------|
+| `brandSKUId` | Unique product identifier |
+| `label` | Original product name |
+| `normalized_name` | Cleaned product name |
+| `core_identity` | Identity string used for clustering |
+| `categoryLabel` | Product category |
+| `cluster_id` | Assigned cluster ID (-1 for noise) |
+| `brand_extracted` | Brand name from facets |
+| `categories_parsed` | All parsed categories |
+| `primary_category` | Primary category |
 
-### 4. Interactive Visualizations
+### 3. Cluster Summary CSV  
+Simplified view focusing on cluster assignments and key product information **with variant classification**.
+
+| Column | Description |
+|--------|-------------|
+| `cluster_id` | Cluster identifier |
+| `variant_type` | **NEW**: Classification (size_variant, type_variant, mixed, no_sisters) |
+| `brandSKUId` | Unique product identifier |
+| `label` | Original product name |
+| `normalized_name` | Cleaned product name |
+| `categoryLabel` | Product category |
+
+**Example CSV rows:**
+```csv
+cluster_id,variant_type,brandSKUId,label,normalized_name,categoryLabel
+cluster_0,size_variant,abc123,"EVEREST GARAM MASALA 50g",garam masala,Spices
+cluster_0,size_variant,def456,"EVEREST GARAM MASALA 100g",garam masala,Spices
+cluster_1,type_variant,ghi789,"Pizza Spice Mix 38g",pizza spice mix,Seasonings
+cluster_1,type_variant,jkl012,"Pasta Spice Mix 38g",pasta spice mix,Seasonings
+```
+
+### 4. Database-Specific Output Files
+
+When using `--from-database`, additional consolidated files are generated:
+
+| File | Description |
+|------|-------------|
+| `master_sister_products_results.csv` | **Consolidated CSV** with all brands and products |
+| `master_processing_summary.json` | **Overall statistics** across all processed brands |
+| `all_brands_database_results.json` | **Complete JSON** with all brand results |
+
+**Master CSV includes:**
+- All fields from individual brand CSVs
+- `brand_name` column for brand identification  
+- `processing_timestamp` for tracking when each brand was processed
+- **Live conflict resolution** - reprocessing a brand updates its entries
+
+### 5. Interactive Visualizations
 - **Network Graph**: Interactive visualization showing product relationships
 - **Dashboard**: Comprehensive analytics with charts and metrics
 - **Cluster Analysis**: Distribution charts and statistics
@@ -368,6 +565,36 @@ python3 main.py --no-visualizations data/*.csv
 - Clusters Found: 45
 - Products with Sisters: 180 (76.3%)
 - Processing Time: ~45 seconds
+
+## ⚡ Quick Reference
+
+### Most Common Commands
+
+```bash
+# 🏆 RECOMMENDED: High-accuracy database processing with variant classification
+python3 main.py --from-database --cluster-epsilon 0.1 --no-visualizations
+
+# 🎯 Process specific brand with optimal settings
+python3 main.py --from-database --brand-id "your-brand-id" --cluster-epsilon 0.1 --no-visualizations
+
+# 🚀 Fast CSV processing without visualizations  
+python3 main.py --no-visualizations --cluster-epsilon 0.1 data/*.csv
+
+# 📊 Full processing with visualizations (slower)
+python3 main.py --cluster-epsilon 0.1 --enable-phonetic data/*.csv
+
+# 🔍 Maximum accuracy (slower but best results)
+python3 main.py --model all-mpnet-base-v2 --enable-phonetic --phonetic-algorithm nysiis --cluster-epsilon 0.15 data/*.csv
+```
+
+### Key Parameter Guidelines
+
+| Use Case | Recommended Settings |
+|----------|---------------------|
+| **Production/Fast** | `--cluster-epsilon 0.1 --no-visualizations` |
+| **High Accuracy** | `--cluster-epsilon 0.15 --enable-phonetic` |
+| **Large Datasets** | `--no-visualizations --batch-size 2000` |
+| **Development** | `--cluster-epsilon 0.1` (with visualizations) |
 
 ## 🚀 Future Enhancements
 

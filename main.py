@@ -50,8 +50,8 @@ Examples:
     
     parser.add_argument(
         'files',
-        nargs='+',
-        help='CSV files containing product data'
+        nargs='*',
+        help='CSV files containing product data (optional when using --from-database)'
     )
     
     parser.add_argument(
@@ -95,6 +95,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--use-facets',
+        action='store_true',
+        help='Use facets_jsonb data directly for embeddings instead of normalized product names. Provides richer semantic information for clustering.'
+    )
+    
+    parser.add_argument(
         '--output-dir',
         default='output',
         help='Output directory for results (default: output)'
@@ -118,10 +124,32 @@ Examples:
         help='Skip generating visualizations'
     )
     
+    parser.add_argument(
+        '--from-database',
+        action='store_true',
+        help='Process products from PostgreSQL database instead of CSV files'
+    )
+    
+    parser.add_argument(
+        '--brand-id',
+        type=str,
+        help='Specific brand ID to process when using --from-database'
+    )
+    
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1000,
+        help='Batch size for database processing (default: 1000)'
+    )
+    
     return parser.parse_args()
 
 def validate_files(file_paths: List[str]) -> List[str]:
     """Validate input files exist and are CSV files."""
+    if not file_paths:  # Allow empty file list for database mode
+        return []
+        
     valid_files = []
     console = Console()
     
@@ -139,6 +167,29 @@ def validate_files(file_paths: List[str]) -> List[str]:
         valid_files.append(str(path))
     
     return valid_files
+
+def display_database_summary(args):
+    """Display database processing configuration."""
+    console = Console()
+    
+    # Create configuration table
+    config_table = Table(title="Database Processing Configuration", show_header=True, header_style="bold magenta")
+    config_table.add_column("Parameter", style="cyan", no_wrap=True)
+    config_table.add_column("Value", style="magenta")
+    
+    config_table.add_row("Data Source", "PostgreSQL Database")
+    config_table.add_row("Model", args.model)
+    config_table.add_row("Min Cluster Size", str(args.min_cluster_size))
+    config_table.add_row("Min Samples", str(args.min_samples))
+    config_table.add_row("Cluster Epsilon", str(args.cluster_epsilon))
+    config_table.add_row("Use Facets", "Yes" if args.use_facets else "No")
+    config_table.add_row("Enable Phonetic", "Yes" if args.enable_phonetic else "No")
+    config_table.add_row("Brand ID Filter", args.brand_id if args.brand_id else "All Brands")
+    config_table.add_row("Batch Size", str(args.batch_size))
+    config_table.add_row("Output Directory", args.output_dir)
+    config_table.add_row("Generate Visualizations", "No" if args.no_visualizations else "Yes")
+    
+    console.print(config_table)
 
 def display_welcome_message():
     """Display welcome message and system information."""
@@ -239,15 +290,22 @@ def main():
     # Display welcome message
     display_welcome_message()
     
-    # Validate input files
-    valid_files = validate_files(args.files)
-    
-    if not valid_files:
-        console.print("[red]❌ No valid CSV files found. Exiting.[/red]")
-        sys.exit(1)
+    # Validate approach: either files or database
+    if args.from_database:
+        if args.files:
+            console.print("[yellow]⚠️ Ignoring file arguments when using --from-database[/yellow]")
+        valid_files = []
+    else:
+        valid_files = validate_files(args.files)
+        if not valid_files:
+            console.print("[red]❌ No valid CSV files found. Use --from-database for database processing.[/red]")
+            sys.exit(1)
     
     # Display processing summary
-    display_processing_summary(valid_files, args)
+    if not args.from_database:
+        display_processing_summary(valid_files, args)
+    else:
+        display_database_summary(args)
     
     # Initialize components
     try:
@@ -260,6 +318,7 @@ def main():
             cluster_selection_epsilon=args.cluster_epsilon,
             enable_phonetic=args.enable_phonetic,
             phonetic_algorithm=args.phonetic_algorithm,
+            use_facets=args.use_facets,
             output_dir=args.output_dir,
             logs_dir=args.logs_dir
         )
@@ -275,30 +334,49 @@ def main():
         console.print(f"[red]❌ Initialization failed: {e}[/red]")
         sys.exit(1)
     
-    # Process all brands
+    # Process brands (either from files or database)
     all_results = {}
     
     try:
-        console.print(f"\n[bold blue]📊 Processing {len(valid_files)} brand(s)...[/bold blue]")
-        
-        for i, file_path in enumerate(valid_files, 1):
-            console.print(f"\n[bold]═══ Brand {i}/{len(valid_files)} ═══[/bold]")
+        if args.from_database:
+            # Database processing mode
+            console.print(f"\n[bold blue]🗄️ Processing from database...[/bold blue]")
+            all_results = mapper.process_from_database(
+                brand_id=args.brand_id,
+                batch_size=args.batch_size
+            )
             
-            try:
-                # Process brand
-                results = mapper.process_brand_file(file_path)
-                brand_name = Path(file_path).stem.replace('_products', '').title()
-                all_results[brand_name] = results
+            # Generate visualizations for database results
+            if not args.no_visualizations and all_results:
+                for brand_name, results in all_results.items():
+                    try:
+                        visualizer.generate_all_visualizations(results, brand_name)
+                        console.print(f"[green]📊 Visualizations generated for {brand_name}[/green]")
+                    except Exception as e:
+                        console.print(f"[yellow]⚠️ Visualization failed for {brand_name}: {e}[/yellow]")
+        
+        else:
+            # File processing mode (existing logic)
+            console.print(f"\n[bold blue]📊 Processing {len(valid_files)} brand(s)...[/bold blue]")
+            
+            for i, file_path in enumerate(valid_files, 1):
+                console.print(f"\n[bold]═══ Brand {i}/{len(valid_files)} ═══[/bold]")
                 
-                # Generate visualizations
-                if not args.no_visualizations:
-                    visualizer.generate_all_visualizations(results, brand_name)
-                
-                console.print(f"[green]✅ {brand_name} processing complete[/green]")
-                
-            except Exception as e:
-                console.print(f"[red]❌ Failed to process {file_path}: {e}[/red]")
-                continue
+                try:
+                    # Process brand
+                    results = mapper.process_brand_file(file_path)
+                    brand_name = Path(file_path).stem.replace('_products', '').title()
+                    all_results[brand_name] = results
+                    
+                    # Generate visualizations
+                    if not args.no_visualizations:
+                        visualizer.generate_all_visualizations(results, brand_name)
+                    
+                    console.print(f"[green]✅ {brand_name} processing complete[/green]")
+                    
+                except Exception as e:
+                    console.print(f"[red]❌ Failed to process {file_path}: {e}[/red]")
+                    continue
         
         # Generate comparison visualizations for multiple brands
         if not args.no_visualizations and len(all_results) > 1:
