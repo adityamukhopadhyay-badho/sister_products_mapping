@@ -101,6 +101,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--simple-identity',
+        action='store_true',
+        help='Use a simplified core identity (brand name + category) for embeddings'
+    )
+    
+    parser.add_argument(
         '--output-dir',
         default='output',
         help='Output directory for results (default: output)'
@@ -183,6 +189,7 @@ def display_database_summary(args):
     config_table.add_row("Min Samples", str(args.min_samples))
     config_table.add_row("Cluster Epsilon", str(args.cluster_epsilon))
     config_table.add_row("Use Facets", "Yes" if args.use_facets else "No")
+    config_table.add_row("Simple Identity", "Yes" if args.simple_identity else "No")
     config_table.add_row("Enable Phonetic", "Yes" if args.enable_phonetic else "No")
     config_table.add_row("Brand ID Filter", args.brand_id if args.brand_id else "All Brands")
     config_table.add_row("Batch Size", str(args.batch_size))
@@ -319,6 +326,7 @@ def main():
             enable_phonetic=args.enable_phonetic,
             phonetic_algorithm=args.phonetic_algorithm,
             use_facets=args.use_facets,
+            simple_identity=args.simple_identity,
             output_dir=args.output_dir,
             logs_dir=args.logs_dir
         )
