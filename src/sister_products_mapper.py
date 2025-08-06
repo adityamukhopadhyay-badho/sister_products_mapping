@@ -611,18 +611,92 @@ class SisterProductsMapper:
         
         return processed_df, embeddings, core_identities
     
-    def perform_clustering(self, embeddings: np.ndarray, brand_name: str) -> np.ndarray:
+    def extract_numerical_features(self, labels: List[str]) -> np.ndarray:
         """
-        Phase 2: Perform HDBSCAN clustering on embeddings.
+        Extract numerical features from product labels for enhanced clustering.
+        
+        Args:
+            labels: List of product labels
+            
+        Returns:
+            Numerical features array
+        """
+        features = []
+        
+        for label in labels:
+            # Extract all numbers from the label
+            numbers = re.findall(r'\d+(?:\.\d+)?', label)
+            
+            # Create feature vector
+            feature_vector = []
+            
+            # Feature 1: Count of numbers in label
+            feature_vector.append(len(numbers))
+            
+            # Feature 2-6: First 5 numerical values (padded with 0 if less than 5)
+            numbers_float = [float(num) for num in numbers[:5]]
+            while len(numbers_float) < 5:
+                numbers_float.append(0.0)
+            feature_vector.extend(numbers_float)
+            
+            # Feature 7: Sum of all numbers
+            feature_vector.append(sum(float(num) for num in numbers))
+            
+            # Feature 8: Maximum number
+            feature_vector.append(max([float(num) for num in numbers]) if numbers else 0.0)
+            
+            # Feature 9: Minimum number
+            feature_vector.append(min([float(num) for num in numbers]) if numbers else 0.0)
+            
+            # Feature 10: Average number
+            if numbers:
+                feature_vector.append(sum(float(num) for num in numbers) / len(numbers))
+            else:
+                feature_vector.append(0.0)
+            
+            # Feature 11: Product length (to capture packaging size differences)
+            feature_vector.append(len(label))
+            
+            features.append(feature_vector)
+        
+        return np.array(features, dtype=np.float32)
+    
+    def perform_clustering(self, embeddings: np.ndarray, brand_name: str, processed_df: pd.DataFrame = None) -> np.ndarray:
+        """
+        Phase 2: Perform HDBSCAN clustering on embeddings with optional numerical features.
         
         Args:
             embeddings: Vector embeddings array
             brand_name: Brand name for logging
+            processed_df: Processed DataFrame containing labels for numerical feature extraction
             
         Returns:
             Cluster labels array
         """
         self.console.print(f"[blue]Performing HDBSCAN clustering for {brand_name}...[/blue]")
+        
+        # Combine embeddings with numerical features if DataFrame is provided
+        if processed_df is not None and 'label' in processed_df.columns:
+            labels = processed_df['label'].tolist()
+            numerical_features = self.extract_numerical_features(labels)
+            
+            # Scale numerical features to match embedding scale
+            from sklearn.preprocessing import StandardScaler
+            scaler = StandardScaler()
+            numerical_features_scaled = scaler.fit_transform(numerical_features)
+            
+            # Combine embeddings and numerical features
+            combined_features = np.hstack([embeddings, numerical_features_scaled])
+            
+            self.logger.info(f"Enhanced clustering for {brand_name}:")
+            self.logger.info(f"  - Embedding dimensions: {embeddings.shape[1]}")
+            self.logger.info(f"  - Numerical features: {numerical_features.shape[1]}")
+            self.logger.info(f"  - Combined dimensions: {combined_features.shape[1]}")
+            
+            clustering_input = combined_features
+        else:
+            clustering_input = embeddings
+            self.logger.info(f"Standard clustering for {brand_name} (embeddings only)")
         
         # Initialize HDBSCAN clusterer
         self.clusterer = hdbscan.HDBSCAN(
@@ -634,7 +708,7 @@ class SisterProductsMapper:
         )
         
         # Perform clustering
-        cluster_labels = self.clusterer.fit_predict(embeddings)
+        cluster_labels = self.clusterer.fit_predict(clustering_input)
         
         # Log clustering results
         n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
@@ -855,7 +929,7 @@ class SisterProductsMapper:
         
         # Process through the three phases
         processed_df, embeddings, core_identities = self.process_brand_data(df, brand_name)
-        cluster_labels = self.perform_clustering(embeddings, brand_name)
+        cluster_labels = self.perform_clustering(embeddings, brand_name, processed_df)
         results = self.generate_output(processed_df, cluster_labels, brand_name)
         
         # Save and display results
@@ -944,7 +1018,7 @@ class SisterProductsMapper:
             
             # Process through the pipeline
             processed_df, embeddings, core_identities = self.process_brand_data(df, brand_name)
-            cluster_labels = self.perform_clustering(embeddings, brand_name)
+            cluster_labels = self.perform_clustering(embeddings, brand_name, processed_df)
             results = self.generate_output(processed_df, cluster_labels, brand_name)
             
             # Save results to CSV and append to master
@@ -993,7 +1067,7 @@ class SisterProductsMapper:
                     
                     # Process through the pipeline
                     processed_df, embeddings, core_identities = self.process_brand_data(df, actual_brand_name)
-                    cluster_labels = self.perform_clustering(embeddings, actual_brand_name)
+                    cluster_labels = self.perform_clustering(embeddings, actual_brand_name, processed_df)
                     results = self.generate_output(processed_df, cluster_labels, actual_brand_name)
                     
                     # Save and append results
