@@ -28,6 +28,9 @@ Sister products are different variants of the same core product (e.g., "Lays Cre
 - 🎨 **Interactive Visualizations** - Network graphs, cluster analysis, and comparison dashboards
 - 💾 **Live Saves** - Results saved progressively during processing
 - ⚡ **Optimized Performance** - Batch processing and efficient vector operations
+- 🚀 **Bulk Processing** - Process 53K+ brands with 1.4M+ products in manageable batches
+- 🔄 **Resume Capability** - Intelligent checkpointing and resumption of interrupted processing
+- 👤 **Human-in-the-Loop** - Manual approval mechanism for batch processing control
 
 ## 📋 Requirements
 
@@ -207,6 +210,14 @@ python3 main.py --from-database --enable-phonetic --phonetic-algorithm metaphone
 | `--from-database` | flag | `False` | Process products from PostgreSQL database instead of CSV files |
 | `--brand-id` | string | `None` | Specific brand ID to process when using --from-database |
 | `--batch-size` | integer | `1000` | Batch size for database processing |
+| `--bulk-run` | flag | `False` | **🚀 BULK PROCESSING MODE**: Process 53K+ brands with 1.4M+ products in batches with human approval |
+| `--bulk-batch-size` | integer | `10000` | Number of brands per batch in bulk processing mode |
+| `--auto-approve` | flag | `False` | **🤖 AUTO-APPROVAL MODE**: Skip human confirmation and automatically process all batches |
+
+### Identity Options
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--simple-identity` | flag | `False` | **🔧 OPTIONAL IDENTITY MODE**: Use simplified core identity (brand + category) for embeddings (not recommended for best results) |
 
 ### Model & Algorithm Options
 | Argument | Type | Default | Description |
@@ -220,6 +231,7 @@ python3 main.py --from-database --enable-phonetic --phonetic-algorithm metaphone
 | `--min-cluster-size` | integer | `2` | Minimum cluster size for HDBSCAN |
 | `--min-samples` | integer | `1` | Minimum samples for HDBSCAN |
 | `--cluster-epsilon` | float | `0.0` | Distance threshold for cluster merging. Higher values (0.1-0.3) create larger, more inclusive clusters |
+| `--fast-clustering` | flag | `False` | **⚡ PERFORMANCE MODE**: Use fast KMeans clustering for all datasets (trades accuracy for speed) |
 
 ### Phonetic Similarity Options
 | Argument | Type | Default | Description |
@@ -265,6 +277,51 @@ python3 main.py --from-database --use-facets --enable-phonetic --phonetic-algori
 
 # High-performance batch processing
 python3 main.py --from-database --batch-size 2000 --no-visualizations --cluster-epsilon 0.1
+```
+
+#### 🚀 Bulk Processing Mode (Enterprise Scale)
+```bash
+# Process all 53K+ brands with 1.4M+ products (default: 10K brands per batch)
+python3 main.py --bulk-run --cluster-epsilon 0.1 --no-visualizations
+
+# Bulk processing with custom batch size (e.g., 5K brands per batch for testing)
+python3 main.py --bulk-run --bulk-batch-size 5000 --cluster-epsilon 0.1 --no-visualizations
+
+# Small test batch (e.g., 100 brands for quick testing)
+python3 main.py --bulk-run --bulk-batch-size 100 --cluster-epsilon 0.1 --no-visualizations
+
+# Bulk processing with enhanced features
+python3 main.py --bulk-run --enable-phonetic --cluster-epsilon 0.1 --min-cluster-size 2
+
+# Resume interrupted bulk processing (automatically detects checkpoints)
+python3 main.py --bulk-run --cluster-epsilon 0.1 --no-visualizations
+
+# AUTO-APPROVAL MODE: Process all batches without human confirmation
+python3 main.py --bulk-run --auto-approve --cluster-epsilon 0.1 --no-visualizations
+
+# Full automation: Auto-approve + fast clustering + custom batch size
+python3 main.py --bulk-run --auto-approve --fast-clustering --bulk-batch-size 5000 --cluster-epsilon 0.1 --no-visualizations
+```
+
+**🎯 Bulk Processing Features:**
+- **Batched Processing**: Configurable brands per batch (default: 10,000)
+- **Human Approval**: Manual approval required before each batch (can be auto-approved)
+- **Auto-Approval Mode**: Skip confirmations and process all batches automatically
+- **Checkpoint & Resume**: Automatic progress saving and resumption
+- **Master Files**: Results saved as `master_sister_products_batch{1-6}.csv`
+- **Progress Tracking**: Detailed statistics and progress monitoring
+- **Error Handling**: Failed brands tracked and can be retried
+
+#### ⚡ Performance Optimizations
+```bash
+# Fast clustering for large datasets (sacrifices some accuracy for speed)
+python3 main.py --fast-clustering --cluster-epsilon 0.1 --no-visualizations data/*.csv
+
+# Fast bulk processing for maximum speed
+python3 main.py --from-database --bulk-run --fast-clustering --cluster-epsilon 0.1 --no-visualizations
+
+# Automatic optimization (fast clustering kicks in for datasets >2000 products)
+python3 main.py --from-database --cluster-epsilon 0.1 --no-visualizations
 ```
 
 #### Advanced Configurations

@@ -74,7 +74,7 @@ class DatabaseManager:
         if engine is None:
             raise Exception("Failed to establish database connection")
         
-        # Use the exact query provided by the user, enhanced with brand name
+        # Use the exact query provided by the user, updated with brand exclusion
         query = """
         WITH cte AS (
             SELECT 
@@ -83,7 +83,7 @@ class DatabaseManager:
                 bs."facetsV2Processed" AS facets_jsonb, 
                 c.label AS "categoryLabel",
                 b.id "brandId",
-                COALESCE(b.label, b.id::text) AS "brandName",
+                b.label "brandLabel",
                 ROW_NUMBER() OVER (PARTITION BY bs.id ORDER BY random()) AS rn
             FROM brands."brandSKU" bs
             JOIN brands.brand b ON bs."brandId" = b.id
@@ -93,8 +93,9 @@ class DatabaseManager:
             WHERE bs."isActive" = true
             AND b."isActive" = true
             AND c."isActive" = true
-            AND bs."facetsV2Processed" IS NOT NULL
-            AND b."isBrandBadhoVerified" = true
+            AND b.id != 'd0f115f8-4127-4081-8948-ee56070a2a0a'
+            -- AND bs."facetsV2Processed" IS NOT NULL
+            -- AND b."isBrandBadhoVerified" = true
         """
         
         if brand_id:
@@ -102,7 +103,7 @@ class DatabaseManager:
         
         query += """
         )
-        SELECT DISTINCT("brandSKUId") "brandSKUId", "brandId", "brandName", label, facets_jsonb, "categoryLabel"
+        SELECT DISTINCT("brandSKUId") "brandSKUId", "brandId", "brandLabel", label, "categoryLabel"
         FROM cte
         WHERE rn = 1
         ORDER BY "brandId";

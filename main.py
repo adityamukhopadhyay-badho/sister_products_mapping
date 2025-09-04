@@ -77,8 +77,8 @@ Examples:
     parser.add_argument(
         '--cluster-epsilon',
         type=float,
-        default=0.0,
-        help='Distance threshold for cluster merging in HDBSCAN. Higher values (0.1-0.3) create larger, more inclusive clusters (default: 0.0)'
+        default=0.1,
+        help='Distance threshold for cluster merging in HDBSCAN. Higher values (0.1-0.3) create larger, more inclusive clusters (default: 0.1)'
     )
     
     parser.add_argument(
@@ -107,6 +107,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--fast-clustering',
+        action='store_true',
+        help='Force use of fast KMeans clustering for all datasets (trades accuracy for speed)'
+    )
+    
+    parser.add_argument(
         '--output-dir',
         default='output',
         help='Output directory for results (default: output)'
@@ -127,13 +133,27 @@ Examples:
     parser.add_argument(
         '--no-visualizations',
         action='store_true',
-        help='Skip generating visualizations'
+        default=True,
+        help='Skip generating visualizations (default: enabled)'
+    )
+    parser.add_argument(
+        '--visualizations',
+        dest='no_visualizations',
+        action='store_false',
+        help='Enable visualizations'
     )
     
     parser.add_argument(
         '--from-database',
         action='store_true',
-        help='Process products from PostgreSQL database instead of CSV files'
+        default=True,
+        help='Process products from PostgreSQL database instead of CSV files (default: enabled)'
+    )
+    parser.add_argument(
+        '--from-csv',
+        dest='from_database',
+        action='store_false',
+        help='Process products from CSV files instead of the database'
     )
     
     parser.add_argument(
@@ -147,6 +167,39 @@ Examples:
         type=int,
         default=1000,
         help='Batch size for database processing (default: 1000)'
+    )
+    
+    parser.add_argument(
+        '--bulk-run',
+        action='store_true',
+        default=True,
+        help='Enable bulk processing mode for processing brands in batches (default: enabled)'
+    )
+    parser.add_argument(
+        '--no-bulk-run',
+        dest='bulk_run',
+        action='store_false',
+        help='Disable bulk processing mode'
+    )
+    
+    parser.add_argument(
+        '--bulk-batch-size',
+        type=int,
+        default=1000,
+        help='Number of brands per batch in bulk processing mode (default: 1000)'
+    )
+    
+    parser.add_argument(
+        '--auto-approve',
+        action='store_true',
+        default=True,
+        help='Auto-approve all batches in bulk processing mode (skip human confirmation) (default: enabled)'
+    )
+    parser.add_argument(
+        '--no-auto-approve',
+        dest='auto_approve',
+        action='store_false',
+        help='Disable auto-approval for batches (requires manual confirmation)'
     )
     
     return parser.parse_args()
@@ -327,6 +380,7 @@ def main():
             phonetic_algorithm=args.phonetic_algorithm,
             use_facets=args.use_facets,
             simple_identity=args.simple_identity,
+            fast_clustering=args.fast_clustering,
             output_dir=args.output_dir,
             logs_dir=args.logs_dir
         )
@@ -346,7 +400,39 @@ def main():
     all_results = {}
     
     try:
-        if args.from_database:
+        if args.bulk_run:
+            # Bulk processing mode for 53K+ brands
+            from src.bulk_processor import BulkProcessor
+            
+            console.print(f"\n[bold red]🚀 BULK PROCESSING MODE ACTIVATED[/bold red]")
+            console.print(f"[yellow]⚠️ This will process 1.4M+ products across 53K+ brands in batches of {args.bulk_batch_size}![/yellow]")
+            
+            # Initialize bulk processor
+            bulk_processor = BulkProcessor(
+                batch_size=args.bulk_batch_size,
+                auto_approve=args.auto_approve,
+                model_name=args.model,
+                min_cluster_size=args.min_cluster_size,
+                min_samples=args.min_samples,
+                cluster_selection_epsilon=args.cluster_epsilon,
+                enable_phonetic=args.enable_phonetic,
+                phonetic_algorithm=args.phonetic_algorithm,
+                use_facets=args.use_facets,
+                simple_identity=args.simple_identity,
+                fast_clustering=args.fast_clustering,
+                output_dir=args.output_dir,
+                logs_dir=args.logs_dir
+            )
+            
+            # Run bulk processing
+            success = bulk_processor.run_bulk_processing()
+            
+            if success:
+                console.print("[bold green]🎉 Bulk processing completed successfully![/bold green]")
+            else:
+                console.print("[yellow]⏸️ Bulk processing paused/interrupted[/yellow]")
+                
+        elif args.from_database:
             # Database processing mode
             console.print(f"\n[bold blue]🗄️ Processing from database...[/bold blue]")
             all_results = mapper.process_from_database(
@@ -386,23 +472,25 @@ def main():
                     console.print(f"[red]❌ Failed to process {file_path}: {e}[/red]")
                     continue
         
-        # Generate comparison visualizations for multiple brands
-        if not args.no_visualizations and len(all_results) > 1:
-            console.print("\n[blue]📈 Generating multi-brand comparison...[/blue]")
-            visualizer.generate_comparison_dashboard(all_results)
-        
-        # Display final summary
-        processing_time = time.time() - start_time
-        display_final_summary(all_results, processing_time)
-        
-        # Display output information
-        console.print(f"\n[bold green]🎯 Results saved to:[/bold green]")
-        console.print(f"  📁 Main results: {args.output_dir}/")
-        if not args.no_visualizations:
-            console.print(f"  📊 Visualizations: {args.visualizations_dir}/")
-        console.print(f"  📋 Logs: {args.logs_dir}/")
-        
-        console.print("\n[bold blue]✨ Sister Products Mapping Complete![/bold blue]")
+        # Skip comparison visualizations and final summary for bulk mode
+        if not args.bulk_run:
+            # Generate comparison visualizations for multiple brands
+            if not args.no_visualizations and len(all_results) > 1:
+                console.print("\n[blue]📈 Generating multi-brand comparison...[/blue]")
+                visualizer.generate_comparison_dashboard(all_results)
+            
+            # Display final summary
+            processing_time = time.time() - start_time
+            display_final_summary(all_results, processing_time)
+            
+            # Display output information
+            console.print(f"\n[bold green]🎯 Results saved to:[/bold green]")
+            console.print(f"  📁 Main results: {args.output_dir}/")
+            if not args.no_visualizations:
+                console.print(f"  📊 Visualizations: {args.visualizations_dir}/")
+            console.print(f"  📋 Logs: {args.logs_dir}/")
+            
+            console.print("\n[bold blue]✨ Sister Products Mapping Complete![/bold blue]")
         
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠️  Processing interrupted by user[/yellow]")

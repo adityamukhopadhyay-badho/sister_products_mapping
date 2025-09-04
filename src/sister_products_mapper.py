@@ -16,6 +16,7 @@ Date: 2024
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 import warnings
@@ -59,6 +60,7 @@ class SisterProductsMapper:
                  phonetic_algorithm: str = 'soundex',
                  use_facets: bool = False,
                  simple_identity: bool = False,
+                 fast_clustering: bool = False,
                  output_dir: str = 'output',
                  logs_dir: str = 'logs'):
         """
@@ -76,6 +78,7 @@ class SisterProductsMapper:
             phonetic_algorithm: Phonetic algorithm to use ('soundex', 'metaphone', 'nysiis', 'match_rating_codex')
             use_facets: Use facets_jsonb data directly for embeddings instead of normalized names
             simple_identity: Use a simplified core identity (Brand | Category) instead of Normalized Name | Category
+            fast_clustering: Force use of fast KMeans clustering for all datasets (trades accuracy for speed)
             output_dir: Directory for output files
             logs_dir: Directory for log files
         """
@@ -87,6 +90,7 @@ class SisterProductsMapper:
         self.phonetic_algorithm = phonetic_algorithm
         self.use_facets = use_facets
         self.simple_identity = simple_identity
+        self.fast_clustering = fast_clustering
         self.output_dir = Path(output_dir)
         self.logs_dir = Path(logs_dir)
         
@@ -489,7 +493,9 @@ class SisterProductsMapper:
             if phonetic_text:
                 facets_identity += f" | PHONETIC:{phonetic_text}"
         
-        return facets_identity.lower().strip()
+        result = facets_identity.lower().strip()
+        # Ensure we never return an empty string
+        return result if result else "unknown product"
 
     def create_core_identity(self, normalized_name: str, category: str, brand: str = "") -> str:
         """
@@ -522,7 +528,9 @@ class SisterProductsMapper:
             if phonetic_text:
                 core_identity += f" | PHONETIC:{phonetic_text}"
         
-        return core_identity.lower().strip()
+        result = core_identity.lower().strip()
+        # Ensure we never return an empty string
+        return result if result else "unknown product"
     
     def process_brand_data(self, df: pd.DataFrame, brand_name: str) -> Tuple[pd.DataFrame, np.ndarray, List[str]]:
         """
@@ -538,6 +546,10 @@ class SisterProductsMapper:
         self.console.print(Panel(f"[bold green]Processing Brand:[/bold green] {brand_name}", 
                                 style="green"))
         
+        # Ensure model is loaded
+        if self.model is None:
+            self.load_model()
+        
         processed_df = df.copy()
         core_identities = []
         
@@ -547,11 +559,20 @@ class SisterProductsMapper:
             
             for idx, row in df.iterrows():
                 try:
-                    # Parse facets JSON
-                    facets = json.loads(row['facets_jsonb']) if isinstance(row['facets_jsonb'], str) else row['facets_jsonb']
+                    # Parse facets JSON if available, otherwise use empty dict
+                    facets = {}
+                    if 'facets_jsonb' in row and pd.notna(row['facets_jsonb']):
+                        try:
+                            if isinstance(row['facets_jsonb'], str):
+                                facets = json.loads(row['facets_jsonb'])
+                            elif isinstance(row['facets_jsonb'], dict):
+                                facets = row['facets_jsonb']
+                        except (json.JSONDecodeError, TypeError):
+                            # If facets parsing fails, use empty dict
+                            facets = {}
                     
                     # Extract brand name from facets for core identity (but use filename brand for normalization)
-                    brand_from_facets = facets.get('brandName', brand_name)
+                    brand_from_facets = facets.get('brandName', brand_name) if facets else brand_name
                     
                     # Phase 1: Normalize the product name (use filename-based brand name for removal)
                     normalized_name = self.normalize_product_name(row['label'], facets, brand_name)
@@ -559,8 +580,8 @@ class SisterProductsMapper:
                     # Parse categories for additional context
                     categories_list = self.parse_categories(row['categoryLabel'])
                     
-                    # Create core identity string - use facets if flag is enabled
-                    if self.use_facets:
+                    # Create core identity string - use facets if flag is enabled and facets are available
+                    if self.use_facets and facets:
                         core_identity = self.create_facets_identity(facets, row['categoryLabel'])
                     else:
                         core_identity = self.create_core_identity(
@@ -605,110 +626,88 @@ class SisterProductsMapper:
         
         # Generate embeddings
         self.console.print("[blue]Generating vector embeddings...[/blue]")
-        embeddings = self.model.encode(core_identities, 
+        
+        # Filter out any None or empty values and ensure all are strings
+        clean_identities = []
+        for identity in core_identities:
+            if identity and isinstance(identity, str) and identity.strip():
+                clean_identities.append(identity.strip())
+            else:
+                clean_identities.append("unknown product")
+        
+        embeddings = self.model.encode(clean_identities, 
                                      show_progress_bar=True,
                                      batch_size=32)
         
-        return processed_df, embeddings, core_identities
+        return processed_df, embeddings, clean_identities
     
-    def extract_numerical_features(self, labels: List[str]) -> np.ndarray:
-        """
-        Extract numerical features from product labels for enhanced clustering.
-        
-        Args:
-            labels: List of product labels
-            
-        Returns:
-            Numerical features array
-        """
-        features = []
-        
-        for label in labels:
-            # Extract all numbers from the label
-            numbers = re.findall(r'\d+(?:\.\d+)?', label)
-            
-            # Create feature vector
-            feature_vector = []
-            
-            # Feature 1: Count of numbers in label
-            feature_vector.append(len(numbers))
-            
-            # Feature 2-6: First 5 numerical values (padded with 0 if less than 5)
-            numbers_float = [float(num) for num in numbers[:5]]
-            while len(numbers_float) < 5:
-                numbers_float.append(0.0)
-            feature_vector.extend(numbers_float)
-            
-            # Feature 7: Sum of all numbers
-            feature_vector.append(sum(float(num) for num in numbers))
-            
-            # Feature 8: Maximum number
-            feature_vector.append(max([float(num) for num in numbers]) if numbers else 0.0)
-            
-            # Feature 9: Minimum number
-            feature_vector.append(min([float(num) for num in numbers]) if numbers else 0.0)
-            
-            # Feature 10: Average number
-            if numbers:
-                feature_vector.append(sum(float(num) for num in numbers) / len(numbers))
-            else:
-                feature_vector.append(0.0)
-            
-            # Feature 11: Product length (to capture packaging size differences)
-            feature_vector.append(len(label))
-            
-            features.append(feature_vector)
-        
-        return np.array(features, dtype=np.float32)
-    
+
     def perform_clustering(self, embeddings: np.ndarray, brand_name: str, processed_df: pd.DataFrame = None) -> np.ndarray:
         """
-        Phase 2: Perform HDBSCAN clustering on embeddings with optional numerical features.
+        Phase 2: Perform HDBSCAN clustering on embeddings.
         
         Args:
             embeddings: Vector embeddings array
             brand_name: Brand name for logging
-            processed_df: Processed DataFrame containing labels for numerical feature extraction
+            processed_df: Processed DataFrame (kept for compatibility, not used)
             
         Returns:
             Cluster labels array
         """
         self.console.print(f"[blue]Performing HDBSCAN clustering for {brand_name}...[/blue]")
         
-        # Combine embeddings with numerical features if DataFrame is provided
-        if processed_df is not None and 'label' in processed_df.columns:
-            labels = processed_df['label'].tolist()
-            numerical_features = self.extract_numerical_features(labels)
-            
-            # Scale numerical features to match embedding scale
-            from sklearn.preprocessing import StandardScaler
-            scaler = StandardScaler()
-            numerical_features_scaled = scaler.fit_transform(numerical_features)
-            
-            # Combine embeddings and numerical features
-            combined_features = np.hstack([embeddings, numerical_features_scaled])
-            
-            self.logger.info(f"Enhanced clustering for {brand_name}:")
-            self.logger.info(f"  - Embedding dimensions: {embeddings.shape[1]}")
-            self.logger.info(f"  - Numerical features: {numerical_features.shape[1]}")
-            self.logger.info(f"  - Combined dimensions: {combined_features.shape[1]}")
-            
-            clustering_input = combined_features
-        else:
-            clustering_input = embeddings
-            self.logger.info(f"Standard clustering for {brand_name} (embeddings only)")
+        # Optimize parameters based on dataset size
+        n_products = embeddings.shape[0]
         
-        # Initialize HDBSCAN clusterer
+        # For large datasets (>1000 products), use optimized parameters
+        if n_products > 1000:
+            # Use more aggressive clustering for large datasets
+            effective_min_cluster_size = max(self.min_cluster_size, 5)
+            effective_min_samples = max(self.min_samples, 3)
+            effective_metric = 'manhattan'  # Alternative distance metric for high-dimensional embeddings
+            self.console.print(f"[yellow]Large dataset ({n_products} products): Using optimized parameters[/yellow]")
+            self.console.print(f"[yellow]  - min_cluster_size: {self.min_cluster_size} → {effective_min_cluster_size}[/yellow]")
+            self.console.print(f"[yellow]  - min_samples: {self.min_samples} → {effective_min_samples}[/yellow]")
+            self.console.print(f"[yellow]  - metric: euclidean → {effective_metric}[/yellow]")
+        else:
+            # Use original parameters for smaller datasets
+            effective_min_cluster_size = self.min_cluster_size
+            effective_min_samples = self.min_samples
+            effective_metric = 'euclidean'
+        
+        # Initialize HDBSCAN clusterer with optimized parameters
+        # Note: n_jobs parameter removed as it's not supported in all HDBSCAN versions
         self.clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=self.min_cluster_size,
-            min_samples=self.min_samples,
+            min_cluster_size=effective_min_cluster_size,
+            min_samples=effective_min_samples,
             cluster_selection_epsilon=self.cluster_selection_epsilon,
-            metric='euclidean',
+            metric=effective_metric,
             cluster_selection_method='eom'
         )
         
-        # Perform clustering
-        cluster_labels = self.clusterer.fit_predict(clustering_input)
+        # Use fast clustering if explicitly requested or for very large datasets
+        if self.fast_clustering or n_products > 2000:
+            reason = "Fast clustering enabled" if self.fast_clustering else f"Very large dataset ({n_products} products)"
+            self.console.print(f"[red]{reason}: Using KMeans for speed[/red]")
+            from sklearn.cluster import KMeans
+            from sklearn.metrics.pairwise import cosine_similarity
+            
+            # Use KMeans for initial clustering (much faster)
+            # Estimate number of clusters based on dataset size
+            estimated_clusters = min(max(n_products // 20, 10), 100)
+            self.console.print(f"[red]  - Estimated clusters: {estimated_clusters}[/red]")
+            
+            kmeans = KMeans(n_clusters=estimated_clusters, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(embeddings)
+            
+            self.logger.info(f"Using KMeans clustering for large dataset ({n_products} products)")
+            
+        else:
+            # Use HDBSCAN for smaller/medium datasets
+            start_time = time.time()
+            cluster_labels = self.clusterer.fit_predict(embeddings)
+            clustering_time = time.time() - start_time
+            self.logger.info(f"HDBSCAN clustering completed in {clustering_time:.2f} seconds")
         
         # Log clustering results
         n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
@@ -1008,7 +1007,7 @@ class SisterProductsMapper:
                 return {}
             
             # Get brand name from first row
-            brand_name = df['brandName'].iloc[0] if 'brandName' in df.columns else df['brandId'].iloc[0]
+            brand_name = df['brandLabel'].iloc[0] if 'brandLabel' in df.columns else df['brandId'].iloc[0]
             
             self.console.print(Panel(
                 f"[bold green]Processing Brand from Database[/bold green]\n"
@@ -1050,7 +1049,7 @@ class SisterProductsMapper:
             
             for idx, brand_row in brands_df.iterrows():
                 brand_id = brand_row['brandId']
-                brand_name = brand_row['brandName']
+                brand_name = brand_row['brandLabel']
                 
                 self.console.print(f"\n[cyan]═══ Brand {idx+1}/{total_brands}: {brand_name} ═══[/cyan]")
                 
@@ -1063,7 +1062,7 @@ class SisterProductsMapper:
                         continue
                     
                     # Use brand name from fetched data for consistent file naming
-                    actual_brand_name = df['brandName'].iloc[0] if 'brandName' in df.columns else brand_name
+                    actual_brand_name = df['brandLabel'].iloc[0] if 'brandLabel' in df.columns else brand_name
                     
                     # Process through the pipeline
                     processed_df, embeddings, core_identities = self.process_brand_data(df, actual_brand_name)
