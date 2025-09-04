@@ -726,7 +726,7 @@ def test_bulk_processor():
     try:
         processor = BulkProcessor(
             batch_size=5,  # Small batch for testing
-            model_name='all-MiniLM-L6-v2',
+            model_name='sentence-transformers/all-MiniLM-L6-v2',
             min_cluster_size=2,
             output_dir='test_output',
             logs_dir='test_logs',

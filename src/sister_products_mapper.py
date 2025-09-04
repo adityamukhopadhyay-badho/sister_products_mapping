@@ -24,7 +24,7 @@ import warnings
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 import hdbscan
 import umap
 import jellyfish
@@ -36,7 +36,11 @@ from rich.panel import Panel
 from rich import print as rprint
 
 # Import database manager
-from .database_manager import DatabaseManager
+try:
+    from .database_manager import DatabaseManager
+except ImportError:
+    # Fallback for when running as standalone script
+    from database_manager import DatabaseManager
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -52,7 +56,7 @@ class SisterProductsMapper:
     """
     
     def __init__(self, 
-                 model_name: str = 'all-MiniLM-L6-v2',
+                 model_name: str = 'sentence-transformers/all-MiniLM-L6-v2',
                  min_cluster_size: int = 2,
                  min_samples: int = 1,
                  cluster_selection_epsilon: float = 0.0,
@@ -241,15 +245,9 @@ class SisterProductsMapper:
         self.logger = logging.getLogger(__name__)
         
     def load_model(self):
-        """Load the sentence transformer model."""
-        if self.model is None:
-            self.console.print(f"[blue]Loading sentence transformer model: {self.model_name}[/blue]")
-            try:
-                self.model = SentenceTransformer(self.model_name)
-                self.logger.info(f"Successfully loaded model: {self.model_name}")
-            except Exception as e:
-                self.logger.error(f"Failed to load model {self.model_name}: {e}")
-                raise
+        """Skip model loading since we're using brand-category-numerical clustering."""
+        self.console.print("[blue]Skipping model loading - using brand-category-numerical clustering...[/blue]")
+        self.logger.info("Using brand-category-numerical clustering - no model needed")
                 
     def normalize_product_name(self, label: str, facets: Dict[str, Any], brand_name: str = "") -> str:
         """
@@ -624,112 +622,382 @@ class SisterProductsMapper:
                 
                 progress.update(task, advance=1)
         
-        # Generate embeddings
-        self.console.print("[blue]Generating vector embeddings...[/blue]")
+        # Skip embedding generation since we're using brand-category-numerical clustering
+        self.console.print("[blue]Skipping vector embeddings - using brand-category-numerical clustering...[/blue]")
         
-        # Filter out any None or empty values and ensure all are strings
-        clean_identities = []
-        for identity in core_identities:
-            if identity and isinstance(identity, str) and identity.strip():
-                clean_identities.append(identity.strip())
-            else:
-                clean_identities.append("unknown product")
+        # Create dummy embeddings array for compatibility
+        embeddings = np.zeros((len(processed_df), 1), dtype=np.float32)
         
-        embeddings = self.model.encode(clean_identities, 
-                                     show_progress_bar=True,
-                                     batch_size=32)
-        
-        return processed_df, embeddings, clean_identities
+        return processed_df, embeddings, core_identities
     
 
-    def perform_clustering(self, embeddings: np.ndarray, brand_name: str, processed_df: pd.DataFrame = None) -> np.ndarray:
+    def extract_base_product_name(self, product_name: str) -> str:
         """
-        Phase 2: Perform HDBSCAN clustering on embeddings.
+        Extract the base product name by removing flavor/variant words and keeping common core terms.
         
         Args:
-            embeddings: Vector embeddings array
-            brand_name: Brand name for logging
-            processed_df: Processed DataFrame (kept for compatibility, not used)
+            product_name: Product name to extract base name from
             
         Returns:
-            Cluster labels array
+            Base product name with common terms preserved
         """
-        self.console.print(f"[blue]Performing HDBSCAN clustering for {brand_name}...[/blue]")
+        # Convert to lowercase for processing
+        name = product_name.lower().strip()
         
-        # Optimize parameters based on dataset size
-        n_products = embeddings.shape[0]
+        # Remove weight/quantity information first
+        name = re.sub(r'\s+\d+(\.\d+)?\s*(g|grams?|gm|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|lbs?|pounds?)\s*$', '', name)
         
-        # For large datasets (>1000 products), use optimized parameters
-        if n_products > 1000:
-            # Use more aggressive clustering for large datasets
-            effective_min_cluster_size = max(self.min_cluster_size, 5)
-            effective_min_samples = max(self.min_samples, 3)
-            effective_metric = 'manhattan'  # Alternative distance metric for high-dimensional embeddings
-            self.console.print(f"[yellow]Large dataset ({n_products} products): Using optimized parameters[/yellow]")
-            self.console.print(f"[yellow]  - min_cluster_size: {self.min_cluster_size} → {effective_min_cluster_size}[/yellow]")
-            self.console.print(f"[yellow]  - min_samples: {self.min_samples} → {effective_min_samples}[/yellow]")
-            self.console.print(f"[yellow]  - metric: euclidean → {effective_metric}[/yellow]")
+        # Remove common packaging terms
+        packaging_terms = ['bag', 'pack', 'packet', 'pouch', 'tin', 'can', 'jar', 'bottle', 'box', 'combo']
+        for term in packaging_terms:
+            name = re.sub(rf'\b{term}\b', '', name)
+        
+        # Remove common flavor/variant indicators
+        flavor_indicators = [
+            'cheese and herbs', 'sweet chili', 'lime and mint', 'sizzlin jalapeno', 
+            'hot & spicy', 'wasabi', 'tikka masala', 'barbeque', 'bbq',
+            'peri peri', 'peri', 'chili', 'jalapeno', 'mint', 'lime',
+            'cheese', 'herbs', 'sweet', 'spicy', 'hot', 'sizzlin',
+            'no onion garlic', 'onion garlic', 'garlic', 'onion',
+            'coated', 'roasted', 'baked', 'fried', 'crisps', 'crispy'
+        ]
+        
+        # Remove flavor indicators
+        for flavor in flavor_indicators:
+            name = re.sub(rf'\b{re.escape(flavor)}\b', '', name)
+        
+        # Remove common adjectives
+        adjectives = ['premium', 'deluxe', 'special', 'original', 'classic', 'new', 'improved']
+        for adj in adjectives:
+            name = re.sub(rf'\b{adj}\b', '', name)
+        
+        # Remove brand name (assuming it's at the beginning)
+        name = re.sub(r'^cornitos\s+', '', name)
+        
+        # Clean up extra spaces and special characters
+        name = re.sub(r'[^\w\s]', ' ', name)
+        name = re.sub(r'\s+', ' ', name).strip()
+        
+        return name
+
+    def calculate_base_name_similarity(self, base1: str, base2: str, original1: str, original2: str) -> float:
+        """
+        Calculate similarity between two base product names.
+        Excludes products that are identical except for numerical data (size variants).
+        
+        Args:
+            base1: First base product name
+            base2: Second base product name
+            original1: Original product name 1
+            original2: Original product name 2
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        if not base1 or not base2:
+            return 0.0
+        
+        # Check if products are identical except for numerical data
+        # Extract numerical data from original names
+        numerical1 = self.extract_numerical_data(original1)
+        numerical2 = self.extract_numerical_data(original2)
+        
+        # If both have numerical data and base names are very similar, check if they're just size variants
+        if numerical1 and numerical2 and base1.strip() == base2.strip():
+            # Products have same base name but different numerical data - these are size variants
+            # Don't cluster them together
+            return 0.0
+        
+        # Split into words
+        words1 = set(base1.split())
+        words2 = set(base2.split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        # Calculate Jaccard similarity
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        jaccard_sim = len(intersection) / len(union) if union else 0.0
+        
+        # Boost score if there are common core terms
+        core_terms = ['nachos', 'chips', 'nuts', 'almonds', 'peanuts', 'cashews', 'raisins', 
+                      'seeds', 'peas', 'corn', 'taco', 'shell', 'jalapenos', 'pickles']
+        
+        common_core_terms = intersection.intersection(set(core_terms))
+        if common_core_terms:
+            jaccard_sim += 0.3  # Boost for common core terms
+        
+        return min(jaccard_sim, 1.0)
+
+    def extract_numerical_data(self, product_name: str) -> List[float]:
+        """
+        Extract numerical data from product names (weights, quantities, etc.).
+        
+        Args:
+            product_name: Product name to extract numerical data from
+            
+        Returns:
+            List of numerical values found in the product name
+        """
+        # Pattern to match various numerical formats in product names
+        patterns = [
+            r'\b(\d+(?:\.\d+)?)\s*(?:g|grams?|gm|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|lbs?|pounds?)\b',
+            r'\b(\d+(?:\.\d+)?)\s*(?:pack|packs|pieces?|pcs?|units?)\b',
+            r'\b(\d+(?:\.\d+)?)\s*(?:inch|inches|cm|centimeters?|mm|millimeters?)\b',
+            r'\b(\d+(?:\.\d+)?)\s*(?:x|×)\s*(\d+(?:\.\d+)?)\b',  # For dimensions like "10x20"
+            r'\b(\d+(?:\.\d+)?)\b'  # Any standalone number
+        ]
+        
+        numerical_values = []
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, product_name, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple):
+                    # Handle patterns that capture multiple groups
+                    for group in match:
+                        if group:
+                            try:
+                                numerical_values.append(float(group))
+                            except ValueError:
+                                continue
+                else:
+                    try:
+                        numerical_values.append(float(match))
+                    except ValueError:
+                        continue
+        
+        return numerical_values
+
+    def calculate_similarity_score(self, product1: Dict, product2: Dict) -> float:
+        """
+        Calculate similarity score between two products based on brand, category, and numerical data.
+        
+        Args:
+            product1: First product dictionary with brand, category, and numerical data
+            product2: Second product dictionary with brand, category, and numerical data
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        score = 0.0
+        
+        # Brand similarity (exact match = 1.0, no match = 0.0)
+        brand1 = product1.get('brand', '').lower().strip()
+        brand2 = product2.get('brand', '').lower().strip()
+        if brand1 and brand2:
+            if brand1 == brand2:
+                score += 0.2  # 20% weight for brand match
+            else:
+                return 0.0  # Different brands = no similarity
+        
+        # Category similarity (exact match = 1.0, no match = 0.0)
+        category1 = product1.get('category', '').lower().strip()
+        category2 = product2.get('category', '').lower().strip()
+        if category1 and category2:
+            if category1 == category2:
+                score += 0.2  # 20% weight for category match
+            else:
+                return 0.0  # Different categories = no similarity
+        
+        # Numerical data similarity (60% weight - highest priority)
+        numerical1 = product1.get('numerical_data', [])
+        numerical2 = product2.get('numerical_data', [])
+        
+        if not numerical1 and not numerical2:
+            # Both have no numerical data - consider them similar
+            score += 0.6
+        elif not numerical1 or not numerical2:
+            # One has numerical data, other doesn't - not similar
+            score += 0.0
         else:
-            # Use original parameters for smaller datasets
-            effective_min_cluster_size = self.min_cluster_size
-            effective_min_samples = self.min_samples
-            effective_metric = 'euclidean'
+            # Both have numerical data - calculate similarity
+            # Find the best matching numerical values
+            max_similarity = 0.0
+            for num1 in numerical1:
+                for num2 in numerical2:
+                    # Calculate similarity based on how close the numbers are
+                    if num1 == 0 and num2 == 0:
+                        similarity = 1.0
+                    elif num1 == 0 or num2 == 0:
+                        similarity = 0.0
+                    else:
+                        # Use relative difference for similarity
+                        diff = abs(num1 - num2)
+                        avg = (num1 + num2) / 2
+                        similarity = max(0, 1 - (diff / avg))
+                    
+                    max_similarity = max(max_similarity, similarity)
+            
+            score += 0.6 * max_similarity
         
-        # Initialize HDBSCAN clusterer with optimized parameters
-        # Note: n_jobs parameter removed as it's not supported in all HDBSCAN versions
-        self.clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=effective_min_cluster_size,
-            min_samples=effective_min_samples,
-            cluster_selection_epsilon=self.cluster_selection_epsilon,
-            metric=effective_metric,
-            cluster_selection_method='eom'
-        )
+        return min(score, 1.0)
+
+    def perform_brand_category_numerical_clustering(self, processed_df: pd.DataFrame, brand_name: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Perform clustering based on brand, category, and numerical data from product names.
+        Now includes an additional base name clustering layer.
         
-        # Use fast clustering if explicitly requested or for very large datasets
-        if self.fast_clustering or n_products > 2000:
-            reason = "Fast clustering enabled" if self.fast_clustering else f"Very large dataset ({n_products} products)"
-            self.console.print(f"[red]{reason}: Using KMeans for speed[/red]")
-            from sklearn.cluster import KMeans
-            from sklearn.metrics.pairwise import cosine_similarity
+        Args:
+            processed_df: Processed DataFrame with product data
+            brand_name: Brand name for logging
             
-            # Use KMeans for initial clustering (much faster)
-            # Estimate number of clusters based on dataset size
-            estimated_clusters = min(max(n_products // 20, 10), 100)
-            self.console.print(f"[red]  - Estimated clusters: {estimated_clusters}[/red]")
+        Returns:
+            Tuple of (cluster_labels, base_cluster_labels)
+        """
+        self.console.print(f"[blue]Performing brand-category-numerical clustering for {brand_name}...[/blue]")
+        
+        n_products = len(processed_df)
+        self.console.print(f"[cyan]Processing {n_products} products...[/cyan]")
+        
+        # Prepare product data for clustering
+        products_data = []
+        for idx, row in processed_df.iterrows():
+            # Extract numerical data from product name
+            numerical_data = self.extract_numerical_data(row['label'])
             
-            kmeans = KMeans(n_clusters=estimated_clusters, random_state=42, n_init=10)
-            cluster_labels = kmeans.fit_predict(embeddings)
+            # Extract base product name for additional clustering layer
+            base_name = self.extract_base_product_name(row['label'])
             
-            self.logger.info(f"Using KMeans clustering for large dataset ({n_products} products)")
+            product_data = {
+                'index': idx,
+                'brand': row.get('brand_extracted', brand_name),
+                'category': row.get('primary_category', row.get('categoryLabel', '')),
+                'numerical_data': numerical_data,
+                'base_name': base_name,
+                'label': row['label']
+            }
+            products_data.append(product_data)
+        
+        # Perform primary clustering using similarity matrix
+        cluster_labels = np.full(n_products, -1)  # Initialize all as noise
+        current_cluster_id = 0
+        similarity_threshold = 0.8  # Minimum similarity to be in same cluster
+        
+        # Create similarity matrix and cluster products
+        for i in range(n_products):
+            if cluster_labels[i] != -1:  # Already assigned to a cluster
+                continue
+                
+            # Start a new cluster with product i
+            cluster_labels[i] = current_cluster_id
+            cluster_members = [i]
             
-        else:
-            # Use HDBSCAN for smaller/medium datasets
-            start_time = time.time()
-            cluster_labels = self.clusterer.fit_predict(embeddings)
-            clustering_time = time.time() - start_time
-            self.logger.info(f"HDBSCAN clustering completed in {clustering_time:.2f} seconds")
+            # Find all products similar to product i
+            for j in range(i + 1, n_products):
+                if cluster_labels[j] != -1:  # Already assigned
+                    continue
+                    
+                similarity = self.calculate_similarity_score(products_data[i], products_data[j])
+                
+                if similarity >= similarity_threshold:
+                    cluster_labels[j] = current_cluster_id
+                    cluster_members.append(j)
+            
+            # Only keep clusters with at least min_cluster_size members
+            if len(cluster_members) >= self.min_cluster_size:
+                current_cluster_id += 1
+            else:
+                # Mark as noise if cluster is too small
+                for member_idx in cluster_members:
+                    cluster_labels[member_idx] = -1
+        
+        # Perform additional base name clustering within each primary cluster
+        self.console.print(f"[blue]Performing base name clustering within primary clusters...[/blue]")
+        base_cluster_labels = np.full(n_products, -1)  # Initialize all as noise
+        base_cluster_id = 0
+        
+        # Group products by primary cluster
+        primary_clusters = {}
+        for idx, cluster_id in enumerate(cluster_labels):
+            if cluster_id not in primary_clusters:
+                primary_clusters[cluster_id] = []
+            primary_clusters[cluster_id].append(idx)
+        
+        # For each primary cluster, perform base name clustering
+        for primary_cluster_id, product_indices in primary_clusters.items():
+            if primary_cluster_id == -1:  # Skip noise points
+                continue
+                
+            # Extract products in this primary cluster
+            cluster_products = [products_data[i] for i in product_indices]
+            
+            # Perform base name clustering within this cluster
+            for i, product_i in enumerate(cluster_products):
+                if base_cluster_labels[product_i['index']] != -1:  # Already assigned
+                    continue
+                    
+                # Start a new base cluster with product i
+                base_cluster_labels[product_i['index']] = base_cluster_id
+                base_cluster_members = [product_i['index']]
+                
+                # Find all products with similar base names
+                for j, product_j in enumerate(cluster_products):
+                    if i >= j or base_cluster_labels[product_j['index']] != -1:  # Skip self or already assigned
+                        continue
+                    
+                    base_similarity = self.calculate_base_name_similarity(
+                        product_i['base_name'], 
+                        product_j['base_name'],
+                        product_i['label'],
+                        product_j['label']
+                    )
+                    
+                    if base_similarity >= 0.6:  # Lower threshold for base name similarity
+                        base_cluster_labels[product_j['index']] = base_cluster_id
+                        base_cluster_members.append(product_j['index'])
+                
+                # Only keep base clusters with at least 2 members
+                if len(base_cluster_members) >= 2:
+                    base_cluster_id += 1
+                else:
+                    # Mark as noise if base cluster is too small
+                    for member_idx in base_cluster_members:
+                        base_cluster_labels[member_idx] = -1
         
         # Log clustering results
         n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
         n_noise = list(cluster_labels).count(-1)
+        n_base_clusters = len(set(base_cluster_labels)) - (1 if -1 in base_cluster_labels else 0)
+        n_base_noise = list(base_cluster_labels).count(-1)
         
-        self.logger.info(f"Clustering results for {brand_name}:")
-        self.logger.info(f"  - Number of clusters: {n_clusters}")
-        self.logger.info(f"  - Number of noise points: {n_noise}")
+        self.logger.info(f"Brand-Category-Numerical clustering results for {brand_name}:")
+        self.logger.info(f"  - Primary clusters: {n_clusters}")
+        self.logger.info(f"  - Primary noise points: {n_noise}")
+        self.logger.info(f"  - Base name clusters: {n_base_clusters}")
+        self.logger.info(f"  - Base name noise points: {n_base_noise}")
         self.logger.info(f"  - Products clustered: {len(cluster_labels) - n_noise}")
+        self.logger.info(f"  - Similarity threshold: {similarity_threshold}")
         
-        return cluster_labels
+        return cluster_labels, base_cluster_labels
+
+    def perform_clustering(self, embeddings: np.ndarray, brand_name: str, processed_df: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Phase 2: Perform clustering - now uses brand-category-numerical approach instead of embeddings.
+        
+        Args:
+            embeddings: Vector embeddings array (kept for compatibility, not used)
+            brand_name: Brand name for logging
+            processed_df: Processed DataFrame with product data
+            
+        Returns:
+            Tuple of (cluster_labels, base_cluster_labels)
+        """
+        # Use the new brand-category-numerical clustering approach
+        return self.perform_brand_category_numerical_clustering(processed_df, brand_name)
     
     # Removed classify_cluster_variant_type method - no longer needed
     
-    def generate_output(self, processed_df: pd.DataFrame, cluster_labels: np.ndarray, 
+    def generate_output(self, processed_df: pd.DataFrame, cluster_data: Tuple[np.ndarray, np.ndarray], 
                        brand_name: str) -> Dict[str, Any]:
         """
         Phase 3: Generate final output structure with cluster mappings.
         
         Args:
             processed_df: Processed DataFrame with product data
-            cluster_labels: Cluster labels from HDBSCAN
+            cluster_data: Tuple of (cluster_labels, base_cluster_labels)
             brand_name: Brand name
             
         Returns:
@@ -737,8 +1005,14 @@ class SisterProductsMapper:
         """
         self.console.print(f"[blue]Generating output structure for {brand_name}...[/blue]")
         
+        cluster_labels, base_cluster_labels = cluster_data
+        
         # Add cluster labels to DataFrame
         processed_df['cluster_id'] = cluster_labels
+        processed_df['base_cluster_id'] = base_cluster_labels
+        
+        # Add base product names to DataFrame
+        processed_df['base_product_name'] = processed_df['label'].apply(self.extract_base_product_name)
         
         # Create sister product clusters mapping
         sister_clusters = {}
@@ -749,20 +1023,38 @@ class SisterProductsMapper:
                 
             cluster_products = processed_df[processed_df['cluster_id'] == cluster_id]
             
-            cluster_data = []
+            # Group by base cluster within this primary cluster
+            base_clusters = {}
             for _, product in cluster_products.iterrows():
+                base_cluster_id = product['base_cluster_id']
+                if base_cluster_id not in base_clusters:
+                    base_clusters[base_cluster_id] = []
+                base_clusters[base_cluster_id].append(product)
+            
+            cluster_data = []
+            for base_cluster_id, base_products in base_clusters.items():
+                base_cluster_data = []
+                for product in base_products:
+                    base_cluster_data.append({
+                        'brandSKUId': product['brandSKUId'],
+                        'label': product['label'],
+                        'normalized_name': product['normalized_name'],
+                        'core_identity': product['core_identity'],
+                        'categoryLabel': product['categoryLabel'],
+                        'categories_parsed': product.get('categories_parsed', ''),
+                        'primary_category': product.get('primary_category', 'general'),
+                        'base_product_name': product['base_product_name'],
+                        'base_cluster_id': base_cluster_id
+                    })
+                
                 cluster_data.append({
-                    'brandSKUId': product['brandSKUId'],
-                    'label': product['label'],
-                    'normalized_name': product['normalized_name'],
-                    'core_identity': product['core_identity'],
-                    'categoryLabel': product['categoryLabel'],
-                    'categories_parsed': product.get('categories_parsed', ''),
-                    'primary_category': product.get('primary_category', 'general')
+                    'base_cluster_id': base_cluster_id,
+                    'base_product_name': base_products[0]['base_product_name'] if base_products else '',
+                    'products': base_cluster_data
                 })
             
             sister_clusters[f"cluster_{cluster_id}"] = {
-                'products': cluster_data
+                'base_clusters': cluster_data
             }
         
         # Handle noise points (products with no sisters)
@@ -777,7 +1069,9 @@ class SisterProductsMapper:
                     'core_identity': product['core_identity'],
                     'categoryLabel': product['categoryLabel'],
                     'categories_parsed': product.get('categories_parsed', ''),
-                    'primary_category': product.get('primary_category', 'general')
+                    'primary_category': product.get('primary_category', 'general'),
+                    'base_product_name': product['base_product_name'],
+                    'base_cluster_id': product['base_cluster_id']
                 })
             sister_clusters['no_sisters'] = {
                 'products': noise_data
@@ -795,6 +1089,7 @@ class SisterProductsMapper:
                 'model_used': self.model_name,
                 'min_cluster_size': self.min_cluster_size,
                 'min_samples': self.min_samples,
+                'clustering_method': 'brand_category_numerical_with_base_name',
                 'timestamp': pd.Timestamp.now().isoformat()
             }
         }
@@ -825,24 +1120,41 @@ class SisterProductsMapper:
         # Save cluster summary CSV
         summary_data = []
         for cluster_name, cluster_info in results['sisterProductClusters'].items():
-            products = cluster_info.get('products', cluster_info)  # Handle old format if needed
-            
-            # Handle case where products might be directly under cluster_info (old format)
-            if isinstance(products, list):
-                product_list = products
+            if cluster_name == 'no_sisters':
+                # Handle noise products
+                products = cluster_info.get('products', [])
+                for product in products:
+                    summary_data.append({
+                        'cluster_id': cluster_name,
+                        'base_cluster_id': product.get('base_cluster_id', -1),
+                        'base_product_name': product.get('base_product_name', ''),
+                        'brandSKUId': product['brandSKUId'],
+                        'label': product['label'],
+                        'normalized_name': product['normalized_name'],
+                        'categoryLabel': product['categoryLabel'],
+                        'categories_parsed': product.get('categories_parsed', ''),
+                        'primary_category': product.get('primary_category', 'general')
+                    })
             else:
-                product_list = [products]  # Single product case
-                
-            for product in product_list:
-                summary_data.append({
-                    'cluster_id': cluster_name,
-                    'brandSKUId': product['brandSKUId'],
-                    'label': product['label'],
-                    'normalized_name': product['normalized_name'],
-                    'categoryLabel': product['categoryLabel'],
-                    'categories_parsed': product.get('categories_parsed', ''),
-                    'primary_category': product.get('primary_category', 'general')
-                })
+                # Handle regular clusters with base clusters
+                base_clusters = cluster_info.get('base_clusters', [])
+                for base_cluster in base_clusters:
+                    base_cluster_id = base_cluster.get('base_cluster_id', -1)
+                    base_product_name = base_cluster.get('base_product_name', '')
+                    products = base_cluster.get('products', [])
+                    
+                    for product in products:
+                        summary_data.append({
+                            'cluster_id': cluster_name,
+                            'base_cluster_id': base_cluster_id,
+                            'base_product_name': base_product_name,
+                            'brandSKUId': product['brandSKUId'],
+                            'label': product['label'],
+                            'normalized_name': product['normalized_name'],
+                            'categoryLabel': product['categoryLabel'],
+                            'categories_parsed': product.get('categories_parsed', ''),
+                            'primary_category': product.get('primary_category', 'general')
+                        })
         
         summary_df = pd.DataFrame(summary_data)
         summary_file = self.output_dir / f"{brand_clean}_cluster_summary.csv"
@@ -875,26 +1187,34 @@ class SisterProductsMapper:
             cluster_sizes = []
             for name, cluster_info in clusters.items():
                 if name != 'no_sisters':
-                    products = cluster_info.get('products', cluster_info)
-                    if isinstance(products, list):
-                        size = len(products)
-                    else:
-                        size = 1
-                    cluster_sizes.append((name, size))
+                    base_clusters = cluster_info.get('base_clusters', [])
+                    total_products = sum(len(bc.get('products', [])) for bc in base_clusters)
+                    cluster_sizes.append((name, total_products))
             
             cluster_sizes.sort(key=lambda x: x[1], reverse=True)
             
             for cluster_name, size in cluster_sizes[:5]:  # Show top 5 clusters
                 cluster_info = clusters[cluster_name]
-                products = cluster_info.get('products', cluster_info)
-                if not isinstance(products, list):
-                    products = [products]
+                base_clusters = cluster_info.get('base_clusters', [])
                 
                 self.console.print(f"\n[green]{cluster_name}[/green] ({size} products):")
-                for i, product in enumerate(products[:3]):  # Show first 3 products
-                    self.console.print(f"  {i+1}. {product['label']}")
-                if len(products) > 3:
-                    self.console.print(f"  ... and {len(products) - 3} more")
+                
+                # Show products from base clusters
+                product_count = 0
+                for base_cluster in base_clusters[:2]:  # Show first 2 base clusters
+                    products = base_cluster.get('products', [])
+                    base_name = base_cluster.get('base_product_name', 'Unknown')
+                    self.console.print(f"  Base: {base_name}")
+                    for product in products[:2]:  # Show first 2 products per base cluster
+                        self.console.print(f"    {product_count+1}. {product['label']}")
+                        product_count += 1
+                        if product_count >= 3:  # Limit to 3 total products shown
+                            break
+                    if product_count >= 3:
+                        break
+                
+                if size > 3:
+                    self.console.print(f"  ... and {size - 3} more")
     
     def process_brand_file(self, file_path: str) -> Dict[str, Any]:
         """
@@ -928,8 +1248,8 @@ class SisterProductsMapper:
         
         # Process through the three phases
         processed_df, embeddings, core_identities = self.process_brand_data(df, brand_name)
-        cluster_labels = self.perform_clustering(embeddings, brand_name, processed_df)
-        results = self.generate_output(processed_df, cluster_labels, brand_name)
+        cluster_data = self.perform_clustering(embeddings, brand_name, processed_df)
+        results = self.generate_output(processed_df, cluster_data, brand_name)
         
         # Save and display results
         self.save_results(results, brand_name, processed_df)
@@ -1017,8 +1337,8 @@ class SisterProductsMapper:
             
             # Process through the pipeline
             processed_df, embeddings, core_identities = self.process_brand_data(df, brand_name)
-            cluster_labels = self.perform_clustering(embeddings, brand_name, processed_df)
-            results = self.generate_output(processed_df, cluster_labels, brand_name)
+            cluster_data = self.perform_clustering(embeddings, brand_name, processed_df)
+            results = self.generate_output(processed_df, cluster_data, brand_name)
             
             # Save results to CSV and append to master
             self._save_and_append_results(results, brand_name, processed_df)
@@ -1066,8 +1386,8 @@ class SisterProductsMapper:
                     
                     # Process through the pipeline
                     processed_df, embeddings, core_identities = self.process_brand_data(df, actual_brand_name)
-                    cluster_labels = self.perform_clustering(embeddings, actual_brand_name, processed_df)
-                    results = self.generate_output(processed_df, cluster_labels, actual_brand_name)
+                    cluster_data = self.perform_clustering(embeddings, actual_brand_name, processed_df)
+                    results = self.generate_output(processed_df, cluster_data, actual_brand_name)
                     
                     # Save and append results
                     self._save_and_append_results(results, actual_brand_name, processed_df)

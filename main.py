@@ -44,7 +44,7 @@ def parse_arguments():
 Examples:
   python3 main.py data/cornitos_products.csv data/haldiram_products.csv
   python3 main.py data/*.csv
-  python3 main.py --model all-MiniLM-L6-v2 --min-cluster-size 3 data/*.csv
+  python3 main.py --model sentence-transformers/all-MiniLM-L6-v2 --min-cluster-size 3 data/*.csv
         """
     )
     
@@ -56,8 +56,8 @@ Examples:
     
     parser.add_argument(
         '--model',
-        default='all-MiniLM-L6-v2',
-        help='Sentence transformer model to use (default: all-MiniLM-L6-v2)'
+        default='sentence-transformers/all-MiniLM-L6-v2',
+        help='FastEmbed model to use (default: sentence-transformers/all-MiniLM-L6-v2)'
     )
     
     parser.add_argument(

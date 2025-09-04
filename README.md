@@ -222,7 +222,7 @@ python3 main.py --from-database --enable-phonetic --phonetic-algorithm metaphone
 ### Model & Algorithm Options
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--model` | string | `all-MiniLM-L6-v2` | Sentence transformer model to use for embeddings |
+| `--model` | string | `sentence-transformers/all-MiniLM-L6-v2` | FastEmbed model to use for embeddings |
 | `--use-facets` | flag | `False` | Use facets_jsonb data directly for embeddings instead of normalized names |
 
 ### Clustering Parameters
@@ -507,7 +507,7 @@ Output: "Lays Potato Chips"
 
 **Step 3: Vector Embeddings**
 - Uses sentence-transformers to convert core identities to high-dimensional vectors
-- Default model: `all-MiniLM-L6-v2` (384 dimensions)
+- Default model: `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions)
 - Captures semantic similarity between products
 
 ### Phase 2: HDBSCAN Clustering
@@ -555,7 +555,7 @@ Comprehensive analytics including:
 
 ### Model Selection
 Choose different sentence transformer models:
-- `all-MiniLM-L6-v2` (default) - Fast, good quality
+- `sentence-transformers/all-MiniLM-L6-v2` (default) - Fast, good quality
 - `all-mpnet-base-v2` - Higher quality, slower
 - `all-distilroberta-v1` - Balanced performance
 

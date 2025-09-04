@@ -5,10 +5,8 @@ scipy>=1.10
 scikit-learn>=1.3
 
 # Embeddings & NLP
-sentence-transformers>=2.2.2
-transformers>=4.36
-# CPU build of PyTorch (works on macOS; use a CUDA-specific wheel if needed)
-torch>=2.1
+fastembed>=0.3.3
+transformers>=4.46
 
 # Clustering & dimensionality reduction
 hdbscan>=0.8.33
