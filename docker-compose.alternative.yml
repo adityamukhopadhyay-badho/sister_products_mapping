@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # Sister Products Mapping API (Alternative Dockerfile)
+  sister-products-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.alternative
+    container_name: sister-products-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Database configuration
+      - DB_HOST=db.badho.in
+      - DB_PORT=5432
+      - DB_NAME=badho-app
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Badho_1301}
+      
+      # Application configuration
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount output directories for persistence
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./checkpoints:/app/checkpoints
+      - ./visualizations:/app/visualizations
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - sister-products-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: sister-products-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - sister-products-network
+
+volumes:
+  redis_data:
+
+networks:
+  sister-products-network:
+    driver: bridge

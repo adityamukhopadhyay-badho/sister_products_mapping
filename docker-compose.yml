@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # Sister Products Mapping API
+  sister-products-api:
+    build: .
+    container_name: sister-products-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Database configuration
+      - DB_HOST=db.badho.in
+      - DB_PORT=5432
+      - DB_NAME=badho-app
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Badho_1301}
+      
+      # Application configuration
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount output directories for persistence
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./checkpoints:/app/checkpoints
+      - ./visualizations:/app/visualizations
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - sister-products-network
+
+  # Optional: Local PostgreSQL database for development
+  # Uncomment if you want to run a local database instead of using the remote one
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: sister-products-db
+  #   environment:
+  #     - POSTGRES_DB=sister_products
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=password
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     - sister-products-network
+
+  # Optional: Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: sister-products-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - sister-products-network
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: sister-products-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - sister-products-api
+    restart: unless-stopped
+    networks:
+      - sister-products-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  sister-products-network:
+    driver: bridge

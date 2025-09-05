@@ -29,3 +29,12 @@ networkx>=3.1
 
 # CLI / Console UX
 rich>=13.6.0 
+# Web API and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Additional web dependencies
+jinja2>=3.1.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
