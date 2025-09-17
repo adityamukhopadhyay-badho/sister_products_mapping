@@ -1,445 +1,183 @@
-# 🔍 Sister Products Mapping System
+# Sister Products Mapping API - Deployment
 
-An advanced AI-powered system for automatically identifying and clustering sister products using vector embeddings and density-based clustering algorithms.
-
-## 🎯 Overview
-
-Sister products are different variants of the same core product (e.g., "Lays Cream & Onion 52g" and "Lays Salted 28g" are both variants of "Lays Potato Chips"). This system automatically identifies such relationships by:
-
-1. **Phase 1: Normalization & Embedding** - Extracts core product identity by removing variant-specific information (flavors, sizes, weights) and creates vector embeddings
-2. **Phase 2: Clustering** - Uses HDBSCAN density-based clustering to automatically group sister products
-3. **Phase 3: Visualization & Output** - Generates comprehensive reports, visualizations, and interactive dashboards
-
-## 🚀 Features
-
-### Core Capabilities
-- ✅ **Intelligent Product Normalization** - Removes flavors, sizes, weights, and packaging variants
-- ✅ **Phonetic Similarity** - Groups similar-sounding products with different spellings (burfi/burfee/barfee)
-- ✅ **Vector Embeddings** - Uses state-of-the-art sentence transformers for semantic understanding
-- ✅ **Automatic Clustering** - HDBSCAN identifies sister products without predefined cluster counts
-- ✅ **Multi-Format Output** - JSON, CSV, and interactive HTML reports
-- ✅ **Rich Visualizations** - Network graphs, distribution charts, and interactive dashboards
-- ✅ **Progress Tracking** - Real-time progress bars and beautiful terminal output
-- ✅ **Multi-Brand Support** - Process multiple brands simultaneously with comparison analytics
-- ✅ **REST API** - FastAPI-based web service with interactive frontend
-- ✅ **Docker Support** - Complete containerization with Nginx and Redis
-
-### Technical Features
-- 🔧 **Configurable Parameters** - Adjust clustering sensitivity and model selection
-- 📊 **Comprehensive Logging** - Detailed logs with Rich formatting
-- 🎨 **Interactive Visualizations** - Network graphs, cluster analysis, and comparison dashboards
-- 💾 **Live Saves** - Results saved progressively during processing
-- ⚡ **Optimized Performance** - Batch processing and efficient vector operations
-- 🐳 **Docker Deployment** - Production-ready containerization
-- 🔒 **Security** - Rate limiting, security headers, and input validation
-- 📈 **Scalability** - Load balancing and caching support
-
-## 🏗️ Architecture
-
-### System Components
-```
-Internet → Nginx (Port 80) → FastAPI App (Port 8000) → PostgreSQL Database
-                                    ↓
-                              Redis (Port 6379) ← Cache Layer
-```
-
-### Services
-- **FastAPI Application**: Main API server with web interface
-- **PostgreSQL Database**: Product data storage
-- **Nginx**: Reverse proxy, load balancer, and security
-- **Redis**: Caching and session management
-- **Docker**: Containerization and orchestration
+AI-powered sister products mapping system using vector embeddings and clustering.
 
 ## 🚀 Quick Start
 
-### Option 1: Docker (Recommended)
-```bash
-# Start all services
-./start_docker.sh
+### Local Development & Testing
 
-# Or manually
-docker-compose up -d --build
+1. **Start the service:**
+   ```bash
+   ./start.sh
+   ```
 
-# Access the application
-# Web: http://localhost:8000
-# API: http://localhost:8000/docs
+2. **Test the API:**
+   ```bash
+   # Health check
+   curl http://localhost:8000/health
+
+   # Process a brand
+   curl -X POST http://localhost:8000/api/process-brand-commit \
+     -H "Content-Type: application/json" \
+     -d '{"brandId":"a1e5abdc-d3f6-4eb1-9d12-7c5d460e8088"}'
+   ```
+
+3. **Stop the service:**
+   ```bash
+   ./stop.sh
+   ```
+
+## 📡 API Endpoints
+
+### `GET /health`
+Health check endpoint with database connectivity test.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "database": "connected", 
+  "connection_pool": "active",
+  "timestamp": "2025-09-17T11:56:24.223309"
+}
 ```
 
-### Option 2: Direct Python
-```bash
-# Install dependencies
-pip install -r requirements.txt
+### `POST /api/process-brand-commit`
+Process brand products and commit results to draft database table.
 
-# Start the API
-python app.py
-
-# Or use startup script
-./start_api.sh
+**Request:**
+```json
+{
+  "brandId": "a1e5abdc-d3f6-4eb1-9d12-7c5d460e8088"
+}
 ```
 
-### Option 3: Using Virtual Environment
-```bash
-# Create and activate venv
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Sister products processed and committed to draft table successfully",
+  "brandId": "a1e5abdc-d3f6-4eb1-9d12-7c5d460e8088",
+  "brandName": "Madhusudan",
+  "processing_stats": {
+    "total_products": 8,
+    "total_clusters": 3,
+    "products_with_sisters": 7,
+    "products_without_sisters": 1,
+    "clustering_rate": 87.5
+  },
+  "database_operation": {
+    "upserted_rows": 8,
+    "table": "brands.sisterProductDraft",
+    "operation": "INSERT_ON_CONFLICT_UPDATE",
+    "columns_used": "brandId, brandSKUId, sisterProductId, clusterId"
+  }
+}
 ```
 
-## 🐳 Docker Management
+## 🗄️ Database Integration
 
-### Essential Commands
-```bash
-# Start services
-./start_docker.sh
-# OR
-docker-compose up -d --build
+### Target Table: `brands."sisterProductDraft"`
 
-# Stop services
-./stop_docker.sh
-# OR
-docker-compose down
+**Schema:**
+- `id`: text, primary key, unique, default: gen_random_uuid()
+- `brandId`: text, nullable
+- `clusterId`: integer, nullable  
+- `brandSKUId`: text, nullable
+- `sisterProductId`: text, nullable
+- `created_at`: timestamp with time zone, nullable, default: now()
+- `updated_at`: timestamp with time zone, nullable, default: now()
 
-# Restart with code changes
-./restart_docker.sh
-# OR
-docker-compose down && docker-compose up -d --build
-```
+### Sister Product Assignment Logic
 
-### Monitoring
-```bash
-# View logs
-docker-compose logs -f
-
-# Check status
-docker-compose ps
-
-# Health check
-curl http://localhost:8000/health
-```
-
-### When Code Changes
-```bash
-# Quick restart (recommended)
-./restart_docker.sh
-
-# Or manually
-docker-compose down
-docker-compose up -d --build
-```
-
-## 🌐 Web Interface
-
-### Features
-- **Brand Selection**: Choose from available brands or enter brand ID
-- **Parameter Configuration**: Adjust AI model, clustering settings, and advanced options
-- **Real-time Processing**: Live status updates during processing
-- **Data Preview**: Interactive table showing all sister products data
-- **Statistics Dashboard**: Processing metrics and clustering results
-- **CSV Download**: Manual download of results in CSV format
-
-### API Endpoints
-- `GET /` - Web interface for brand selection and processing
-- `GET /api/brands` - List all available brands
-- `POST /api/process-brand-json` - Process sister products (returns JSON data)
-- `POST /api/process-brand` - Process sister products (returns CSV file)
-- `GET /api/status/{brand_id}` - Get processing status
-- `GET /health` - Health check endpoint
+1. **Cluster-based Assignment**: The first `brandSKUId` in each cluster becomes the `sisterProductId` for all products in that cluster
+2. **Noise Points**: Products in cluster -1 (no sisters) reference themselves as `sisterProductId`
+3. **Connection Pooling**: Uses SQLAlchemy connection pooling to prevent idle connection timeouts
 
 ## 🔧 Configuration
 
+### Database Connection
+Database credentials are hardcoded in `docker-compose.yml`:
+- Host: `db.badho.in`
+- Port: `5432`
+- Database: `badho-app`
+- User: `postgres`
+- Password: `Badho_1301`
+
 ### Environment Variables
+- `PYTHONUNBUFFERED=1`: Ensures Python output is sent straight to terminal
+- `PYTHONPATH=/app`: Sets Python path for module imports
+
+## 🏗️ Architecture
+
+### Core Components
+1. **FastAPI Application** (`app.py`): REST API endpoints
+2. **Database Manager** (`src/database_manager.py`): PostgreSQL connection and operations
+3. **Sister Products Mapper** (`src/sister_products_mapper.py`): AI clustering pipeline
+
+### Processing Pipeline
+1. **Fetch Products**: Retrieve brand products from database
+2. **Normalization**: Clean and normalize product names
+3. **Embeddings**: Generate vector embeddings using Sentence Transformers
+4. **Clustering**: Apply HDBSCAN clustering to find sister products
+5. **Database Commit**: Store results in `brands."sisterProductDraft"` table
+
+## 🔒 Security Notes
+
+- Database credentials are hardcoded in `docker-compose.yml` for deployment convenience
+- This folder is not pushed to GitHub to protect sensitive information
+- Uses connection pooling with TCP keepalives for stable database connections
+
+## 📦 Deployment
+
+### For Coolify Deployment
+1. Upload this entire `deploy/` folder as your build context
+2. Coolify will automatically detect the `Dockerfile` and `docker-compose.yml`
+3. The service will be available on port 8000
+4. Health checks are configured for monitoring
+
+### Manual Docker Deployment
 ```bash
-# Database configuration
-DB_HOST=db.badho.in
-DB_PORT=5432
-DB_NAME=badho-app
-DB_USER=postgres
-DB_PASSWORD=Badho_1301
+# Build and start
+docker compose up -d --build
 
-# Application configuration
-APP_HOST=0.0.0.0
-APP_PORT=8000
-APP_DEBUG=True
+# View logs
+docker compose logs -f
 
-# AI Model configuration
-DEFAULT_MODEL=all-MiniLM-L6-v2
-MIN_CLUSTER_SIZE=2
-MIN_SAMPLES=1
-CLUSTER_EPSILON=0.1
+# Stop
+docker compose down
 ```
 
-### AI Model Options
-- **all-MiniLM-L6-v2** (Default): Balanced speed/accuracy
-- **all-mpnet-base-v2**: More accurate, slower
-- **paraphrase-MiniLM-L6-v2**: Faster, less accurate
+## 🧹 Removed Components
 
-### Clustering Parameters
-- **Min Cluster Size**: 2 (minimum products per sister group)
-- **Cluster Epsilon**: 0.1 (sensitivity for grouping)
-- **Phonetic Similarity**: Optional for similar-sounding words
-- **Facets Data**: Optional for richer product analysis
+The following components were removed for API-only deployment:
+- Frontend HTML/CSS/JavaScript code
+- CSV generation and download functionality  
+- Nginx reverse proxy
+- Authentication middleware
+- File upload capabilities
+- `visualizer.py` and `bulk_processor.py` modules
 
-## 📊 Processing Workflow
+## 📊 Performance
 
-1. **Brand Selection**: User selects a brand from the web interface
-2. **Data Fetching**: System fetches all products for the brand from database
-3. **AI Processing**: 
-   - Product normalization and embedding generation
-   - HDBSCAN clustering to identify sister products
-   - Results generation
-4. **Data Display**: Results shown in interactive table with statistics
-5. **CSV Export**: Optional download of results in CSV format
-
-## 🔍 API Usage Examples
-
-### Process Sister Products
-```bash
-curl -X POST "http://localhost:8000/api/process-brand-json" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brandId": "123e4567-e89b-12d3-a456-426614174000",
-    "model_name": "all-MiniLM-L6-v2",
-    "min_cluster_size": 2,
-    "cluster_epsilon": 0.1,
-    "enable_phonetic": false,
-    "use_facets": false
-  }'
-```
-
-### Get Available Brands
-```bash
-curl "http://localhost:8000/api/brands"
-```
-
-### Check Processing Status
-```bash
-curl "http://localhost:8000/api/status/123e4567-e89b-12d3-a456-426614174000"
-```
-
-## 🏗️ Infrastructure
-
-### Nginx (Reverse Proxy)
-- **Performance**: 10x faster static file serving
-- **Security**: Rate limiting (10 requests/second per IP)
-- **Scalability**: Can handle 10,000+ concurrent users
-- **Load Balancing**: Distributes load across multiple instances
-- **SSL Support**: HTTPS encryption for production
-
-### Redis (Caching)
-- **AI Model Caching**: Avoid reloading 100MB+ models repeatedly
-- **Brand Data Caching**: Skip reprocessing same brand data
-- **Session Management**: Fast user session storage
-- **Real-time Updates**: Live processing status updates
-- **Memory Efficiency**: In-memory storage is 100x faster than disk
-
-## 📁 Project Structure
-
-```
-sister_products_mapping/
-├── app.py                          # FastAPI application
-├── main.py                         # Original CLI application
-├── post_process_pipeline.py        # CSV processing pipeline
-├── requirements.txt                # Python dependencies
-├── Dockerfile                      # Docker configuration
-├── docker-compose.yml             # Multi-service setup
-├── nginx.conf                     # Reverse proxy config
-├── start_docker.sh                # Docker start script
-├── stop_docker.sh                 # Docker stop script
-├── restart_docker.sh              # Docker restart script
-├── start_api.sh                   # Python start script
-├── test_app.py                    # Test script
-└── src/
-    ├── sister_products_mapper.py  # Core AI processing
-    ├── database_manager.py        # Database operations
-    ├── bulk_processor.py          # Batch processing
-    └── visualizer.py              # Visualization tools
-```
-
-## 🛠️ Development
-
-### Prerequisites
-- Python 3.11+
-- Docker and Docker Compose
-- PostgreSQL database access
-- 4GB+ RAM for processing
-
-### Setup
-```bash
-# Clone repository
-git clone <repository-url>
-cd sister_products_mapping
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your database credentials
-
-# Start with Docker
-./start_docker.sh
-
-# Or start with Python
-pip install -r requirements.txt
-python app.py
-```
-
-### Testing
-```bash
-# Test the application
-python test_app.py
-
-# Test API endpoints
-curl http://localhost:8000/health
-curl http://localhost:8000/api/brands
-```
-
-## 🚀 Production Deployment
-
-### Security Configuration
-```bash
-# Generate secret key
-openssl rand -hex 32
-
-# Update .env with production values
-SECRET_KEY=your-generated-secret-key
-ALLOWED_HOSTS=your-domain.com,www.your-domain.com
-```
-
-### SSL Configuration
-```bash
-# Create SSL directory
-mkdir ssl
-
-# Add your SSL certificates
-# ssl/cert.pem - SSL certificate
-# ssl/key.pem - Private key
-```
-
-### Resource Limits
-Update `docker-compose.yml` with resource limits:
-```yaml
-services:
-  sister-products-api:
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: '2.0'
-```
+- **Model**: `all-MiniLM-L6-v2` (384-dimensional embeddings)
+- **Clustering**: HDBSCAN with automatic parameter optimization
+- **Connection Pooling**: 5 base connections, 10 overflow, 1-hour recycle
+- **Batch Processing**: 1000 rows per database batch
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
+1. **Database Connection Failed**: Check if credentials in `docker-compose.yml` are correct
+2. **Port Already in Use**: Change port mapping in `docker-compose.yml`
+3. **Out of Memory**: Reduce batch size or use smaller model
+4. **Slow Processing**: Consider enabling `fast_clustering=True` for large datasets
 
-#### 1. Docker Build Fails
+### Logs
 ```bash
-# Clean and rebuild
-docker-compose down --remove-orphans
-docker-compose build --no-cache
-docker-compose up -d
-```
+# View real-time logs
+docker compose logs -f api
 
-#### 2. Database Connection Failed
-```bash
-# Check database connectivity
-docker-compose exec sister-products-api python -c "
-from src.database_manager import DatabaseManager
-db = DatabaseManager()
-print('DB connection:', db.get_db_engine() is not None)
-"
-```
-
-#### 3. Out of Memory
-```bash
-# Check memory usage
-docker stats
-
-# Increase Docker memory limit
-# Docker Desktop: Settings > Resources > Memory
-```
-
-#### 4. Port Already in Use
-```bash
-# Check what's using port 8000
-lsof -i :8000
-
-# Kill the process
-sudo kill -9 <PID>
-```
-
-## 📈 Performance
-
-### Benchmarks
-- **Processing Time**: 1-5 minutes per brand (depends on product count)
-- **Concurrent Users**: 1000+ with Nginx load balancing
-- **Memory Usage**: 2-4GB for typical processing
-- **Response Time**: 200-500ms with caching
-
-### Optimization
-- **Model Caching**: Avoid reloading AI models
-- **Brand Data Caching**: Skip reprocessing same brands
-- **Connection Pooling**: Efficient database connections
-- **Load Balancing**: Distribute load across instances
-
-## 🔄 Updates and Maintenance
-
-### Update Application
-```bash
-# Pull latest changes
-git pull
-
-# Rebuild and restart
-docker-compose down
-docker-compose build --no-cache
-docker-compose up -d
-```
-
-### Backup Data
-```bash
-# Backup output files
-tar -czf backup-$(date +%Y%m%d).tar.gz output/ logs/
-
-# Backup database (if using local postgres)
-docker-compose exec postgres pg_dump -U postgres sister_products > backup.sql
-```
-
-### Clean Up
-```bash
-# Remove unused containers and images
-docker system prune -a
-
-# Remove specific volumes
-docker volume rm sister_products_mapping_postgres_data
-```
-
-## 📞 Support
-
-For issues and questions:
-1. Check the logs: `docker-compose logs -f`
-2. Verify environment configuration
-3. Test database connectivity
-4. Check resource usage
-
-## 🎯 Next Steps
-
-1. **Monitoring**: Set up Prometheus/Grafana for metrics
-2. **Logging**: Configure centralized logging (ELK stack)
-3. **CI/CD**: Set up automated deployment pipeline
-4. **Scaling**: Implement horizontal scaling with load balancer
-5. **Security**: Add authentication and authorization
-6. **Caching**: Implement Redis caching for better performance
-
-## 🎉 Ready to Use!
-
-The Sister Products Mapping System is now production-ready with:
-- ✅ **Complete Docker deployment**
-- ✅ **REST API with web interface**
-- ✅ **AI-powered sister products clustering**
-- ✅ **Interactive data visualization**
-- ✅ **Production-ready security and performance**
-- ✅ **Comprehensive documentation**
-
-Start using it with: `./start_docker.sh` 🚀
+# View specific container logs
+docker logs sister-products-api
+``` 
